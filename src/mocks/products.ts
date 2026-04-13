@@ -6,6 +6,18 @@ export const tablaturas = [
     pages: 4,
     hasVideo: true,
     videoId: null as string | null,
+    pageTimes: [0, 68, 142, 210] as number[],
+    // lyrics: [{ beat: measure * 8 + beatIndex, text: 'palavra' }]
+    lyrics: [
+      { beat: 0,  text: 'A-' }, { beat: 4,  text: 've' },
+      { beat: 8,  text: 'Ma-' }, { beat: 12, text: 'ri-' }, { beat: 14, text: 'a,' },
+      { beat: 20, text: 'gra-' }, { beat: 24, text: 'ti-' }, { beat: 28, text: 'a' }, { beat: 30, text: 'ple-' }, { beat: 32, text: 'na,' },
+      { beat: 40, text: 'Do-' }, { beat: 44, text: 'mi-' }, { beat: 46, text: 'nus' }, { beat: 50, text: 'te-' }, { beat: 54, text: 'cum,' },
+      { beat: 60, text: 'be-' }, { beat: 62, text: 'ne-' }, { beat: 64, text: 'di-' }, { beat: 66, text: 'ta' },
+      { beat: 72, text: 'tu' }, { beat: 76, text: 'in' }, { beat: 78, text: 'mu-' }, { beat: 80, text: 'li-' }, { beat: 82, text: 'e-' }, { beat: 84, text: 'ri-' }, { beat: 86, text: 'bus,' },
+      { beat: 92, text: 'e' }, { beat: 96, text: 'be-' }, { beat: 98, text: 'ne-' }, { beat: 100, text: 'di-' }, { beat: 102, text: 'tus' },
+    ] as { beat: number; text: string }[],
+    pdfUrl: null as string | null,
     image: 'https://readdy.ai/api/search-image?query=classical guitar sheet music tablature on wooden table with soft candlelight warm tones elegant minimalist background&width=400&height=500&seq=tab1&orientation=portrait',
   },
   {
@@ -15,6 +27,14 @@ export const tablaturas = [
     pages: 3,
     hasVideo: true,
     videoId: null as string | null,
+    pageTimes: [] as number[],
+    lyrics: [
+      { beat: 0,  text: 'Pai' }, { beat: 4,  text: 'nos-' }, { beat: 6,  text: 'so' },
+      { beat: 12, text: 'que' }, { beat: 14, text: 'es-' }, { beat: 16, text: 'tais' }, { beat: 20, text: 'no' }, { beat: 22, text: 'céu,' },
+      { beat: 28, text: 'san-' }, { beat: 30, text: 'ti-' }, { beat: 32, text: 'fi-' }, { beat: 34, text: 'ca-' }, { beat: 36, text: 'do' },
+      { beat: 40, text: 'se-' }, { beat: 42, text: 'ja' }, { beat: 44, text: 'o' }, { beat: 46, text: 'Vos-' }, { beat: 48, text: 'so' }, { beat: 50, text: 'no-' }, { beat: 52, text: 'me,' },
+    ] as { beat: number; text: string }[],
+    pdfUrl: null as string | null,
     image: 'https://readdy.ai/api/search-image?query=acoustic guitar close up strings fingerpicking warm golden light prayer atmosphere peaceful&width=400&height=500&seq=tab2&orientation=portrait',
   },
   {
@@ -24,6 +44,9 @@ export const tablaturas = [
     pages: 6,
     hasVideo: true,
     videoId: null as string | null,
+    pageTimes: [] as number[],
+    lyrics: [] as { beat: number; text: string }[],
+    pdfUrl: null as string | null,
     image: 'https://readdy.ai/api/search-image?query=guitar music notes manuscript paper vintage parchment texture warm brown tones sacred music&width=400&height=500&seq=tab3&orientation=portrait',
   },
   {
@@ -33,6 +56,9 @@ export const tablaturas = [
     pages: 5,
     hasVideo: true,
     videoId: null as string | null,
+    pageTimes: [] as number[],
+    lyrics: [] as { beat: number; text: string }[],
+    pdfUrl: null as string | null,
     image: 'https://readdy.ai/api/search-image?query=classical guitar on church pew wooden bench soft light stained glass background sacred atmosphere&width=400&height=500&seq=tab4&orientation=portrait',
   },
   {
@@ -42,6 +68,9 @@ export const tablaturas = [
     pages: 4,
     hasVideo: false,
     videoId: null as string | null,
+    pageTimes: [] as number[],
+    lyrics: [] as { beat: number; text: string }[],
+    pdfUrl: null as string | null,
     image: 'https://readdy.ai/api/search-image?query=guitar tablature sheet music close up with pencil warm light wooden desk minimalist clean background&width=400&height=500&seq=tab5&orientation=portrait',
   },
   {
@@ -51,6 +80,9 @@ export const tablaturas = [
     pages: 3,
     hasVideo: false,
     videoId: null as string | null,
+    pageTimes: [] as number[],
+    lyrics: [] as { beat: number; text: string }[],
+    pdfUrl: null as string | null,
     image: 'https://readdy.ai/api/search-image?query=acoustic guitar neck fretboard close up warm amber light bokeh background peaceful serene&width=400&height=500&seq=tab6&orientation=portrait',
   },
   {
@@ -60,6 +92,9 @@ export const tablaturas = [
     pages: 4,
     hasVideo: true,
     videoId: null as string | null,
+    pageTimes: [] as number[],
+    lyrics: [] as { beat: number; text: string }[],
+    pdfUrl: null as string | null,
     image: 'https://readdy.ai/api/search-image?query=guitar music score paper on stone altar candles background sacred religious atmosphere warm tones&width=400&height=500&seq=tab7&orientation=portrait',
   },
   {
@@ -69,6 +104,9 @@ export const tablaturas = [
     pages: 7,
     hasVideo: true,
     videoId: null as string | null,
+    pageTimes: [] as number[],
+    lyrics: [] as { beat: number; text: string }[],
+    pdfUrl: null as string | null,
     image: 'https://readdy.ai/api/search-image?query=fingerstyle guitar hands playing close up warm light wooden floor background artistic photography&width=400&height=500&seq=tab8&orientation=portrait',
   },
 ];
