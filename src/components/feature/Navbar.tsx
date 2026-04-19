@@ -59,17 +59,13 @@ const Navbar = () => {
                 {link.label}
               </button>
             ))}
+            <Link
+              to="/tabmaker"
+              className={`text-sm font-semibold transition-colors duration-200 ${scrolled ? 'text-amber-600 hover:text-amber-500' : 'text-amber-400 hover:text-amber-300'}`}
+            >
+              TabVinde
+            </Link>
           </div>
-
-          {/* TabVinde desktop */}
-          <Link
-            to="/tabmaker"
-            className={`hidden md:block text-sm font-medium px-4 py-2 rounded-full border transition-colors duration-200 ${
-              scrolled ? 'border-amber-600 text-amber-600 hover:bg-amber-600 hover:text-white' : 'border-amber-400 text-amber-400 hover:bg-amber-400 hover:text-stone-900'
-            }`}
-          >
-            TabVinde
-          </Link>
 
           {/* CTA desktop */}
           <button
