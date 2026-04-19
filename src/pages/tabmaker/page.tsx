@@ -323,7 +323,7 @@ const TabmakerPage = () => {
   const [selectedString, setSelectedString] = useState<number>(0); // 0=e, 5=E (keyboard nav)
   const [selAnchor, setSelAnchor] = useState<number | null>(null); // shift-select anchor beat
   const clipboardRef = useRef<{ cells: CellData[][]; lyrics: Record<number, string>; chords: Record<number, ChordLabel> } | null>(null);
-  const [fretInputBuffer, setFretInputBuffer] = useState<string>('');
+  const [, setFretInputBuffer] = useState<string>('');
   const fretInputTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [detectedBpm, setDetectedBpm] = useState<number | null>(null);
   const [cifraText, setCifraText] = useState<string>('');
@@ -758,7 +758,7 @@ const TabmakerPage = () => {
           release: 1.2,
           onload: checkLoaded,
         });
-        bassSampler.set({ detune: -30 });
+        bassSampler.set({ detune: -30 } as never);
         bassSampler.connect(bassEq);
 
         if (disposed) {
@@ -790,7 +790,6 @@ const TabmakerPage = () => {
 
   // Keyboard shortcuts: Ctrl+Z undo, Ctrl+Y redo, arrow keys navigate, number keys set fret
   useEffect(() => {
-    const colsPerBar = subdivModeRef.current ? 8 : 4;
     const handler = (e: KeyboardEvent) => {
       if ((e.target as HTMLElement).tagName === 'INPUT' || (e.target as HTMLElement).tagName === 'TEXTAREA') return;
       if (e.ctrlKey && !e.shiftKey && e.key === 'z') { e.preventDefault(); undo(); return; }
