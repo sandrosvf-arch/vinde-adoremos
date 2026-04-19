@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import * as Tone from 'tone';
-import { Play, Pause, Trash2, ArrowLeft, Loader2, Timer } from 'lucide-react';
+import { Play, Pause, Trash2, ArrowLeft, Loader2, Timer, SkipBack, SkipForward, ChevronLeft, ChevronRight, Download, Upload, Save, Plus, Minus, Undo2, Redo2, Columns2, X } from 'lucide-react';
 import { Link } from 'react-router-dom';
 
 // Standard guitar tuning — open string MIDI (string 0 = high e)
@@ -8,6 +8,7 @@ const STRING_LABELS = ['e', 'B', 'G', 'D', 'A', 'E'];
 const OPEN_MIDI = [64, 59, 55, 50, 45, 40];
 const STRING_COUNT = 6;
 const DEFAULT_BEATS = 16;
+const STORAGE_KEY = 'tabmaker-autosave-v1';
 
 // ── BPM estimation: onset-strength autocorrelation ──────────────────────────
 function estimateBPM(pcm: Float32Array, sampleRate: number): number {
@@ -67,15 +68,13 @@ function noteAtFret(stringIdx: number, fret: number): string {
   return midiToNoteName(OPEN_MIDI[stringIdx] + fret);
 }
 
-type Technique = 'slide-up' | 'slide-down' | 'hammer' | 'pull';
-type CellData = { fret: number; tech?: Technique } | null;
+type Technique = 'slide-up' | 'slide-down' | 'hammer' | 'pull' | 'arpeggio' | 'mute';
+type CellData = { fret: number; tech?: Technique; slideTo?: number; muteAfter?: number } | null;
 type Grid = CellData[][];
+type ChordLabel = { name: string; shape?: string };
 function emptyGrid(beats = DEFAULT_BEATS): Grid {
   return Array.from({ length: beats }, () => Array(STRING_COUNT).fill(null));
 }
-
-const BASE_URL =
-  'https://gleitz.github.io/midi-js-soundfonts/MusyngKite/acoustic_guitar_nylon-mp3/';
 
 // ── Guitar neck visual ──────────────────────────────────────────────────────
 const OPEN_W  = 38;   // width of open string (fret 0) section
@@ -85,8 +84,9 @@ const NECK_H  = 86;
 const STR_TOP = 16;   // y of string e
 const STR_GAP = 10;   // gap between strings
 const STR_THICK = [0.7, 0.9, 1.15, 1.5, 1.9, 2.5];
-const DOT_FRETS  = [5, 7, 9];
-const NECK_FRETS = 12;
+const DOT_FRETS  = [5, 7, 9, 15, 17];
+const NECK_FRETS = 19;
+const MAX_FRET   = 19;
 
 const sectionLeft = (f: number) =>
   f === 0 ? 0 : OPEN_W + NUT_W + (f - 1) * SECT_W;
@@ -185,6 +185,9 @@ function GuitarNeck({
           {/* Double dot — 12 */}
           <circle cx={sectionCenterX(12)} cy={dotY - STR_GAP * 1.2} r={4} fill="#44403c" />
           <circle cx={sectionCenterX(12)} cy={dotY + STR_GAP * 1.2} r={4} fill="#44403c" />
+          {/* Double dot — 19 */}
+          <circle cx={sectionCenterX(19)} cy={dotY - STR_GAP * 1.2} r={4} fill="#44403c" />
+          <circle cx={sectionCenterX(19)} cy={dotY + STR_GAP * 1.2} r={4} fill="#44403c" />
 
           {/* Capo bar */}
           {capo > 0 && (
@@ -282,7 +285,7 @@ function bestStringFret(
   for (let s = 0; s < STRING_COUNT; s++) {
     const fret = midi - OPEN_MIDI[s];
     // fret must be reachable and at or above capo (below capo is physically blocked)
-    if (fret < capo || fret > 12) continue;
+    if (fret < capo || fret > MAX_FRET) continue;
     let score = fret - capo; // prefer frets close to capo (natural hand position)
     // Prefer notes in the key scale
     if (keyNotes.size > 0 && !keyNotes.has(midi % 12)) score += 4;
@@ -299,19 +302,41 @@ function bestStringFret(
 // ────────────────────────────────────────────────────────────────────────────
 
 const TabmakerPage = () => {
+  // ── Undo / Redo history ──────────────────────────────────────────────────
+  type Snapshot = { grid: Grid; beats: number; lyrics: Record<number, string>; chords: Record<number, ChordLabel> };
+  const historyRef  = useRef<Snapshot[]>([]);
+  const futureRef   = useRef<Snapshot[]>([]);
+  const [canUndo, setCanUndo] = useState(false);
+  const [canRedo, setCanRedo] = useState(false);
+
   const [grid, setGrid] = useState<Grid>(emptyGrid);
   const [beats, setBeats] = useState(DEFAULT_BEATS);
+  const [startBeat, setStartBeat] = useState(0);
+  const startBeatRef = useRef(0);
+  startBeatRef.current = startBeat;
   const [subdivMode, setSubdivMode] = useState(false);
   const subdivModeRef = useRef(false);
   subdivModeRef.current = subdivMode;
   const [lyrics, setLyrics] = useState<Record<number, string>>({});
+  const [chords, setChords] = useState<Record<number, ChordLabel>>({});
+  const [selectedBeat, setSelectedBeat] = useState<number | null>(null); // keyboard nav cursor
+  const [selectedString, setSelectedString] = useState<number>(0); // 0=e, 5=E (keyboard nav)
+  const [selAnchor, setSelAnchor] = useState<number | null>(null); // shift-select anchor beat
+  const clipboardRef = useRef<{ cells: CellData[][]; lyrics: Record<number, string>; chords: Record<number, ChordLabel> } | null>(null);
+  const [fretInputBuffer, setFretInputBuffer] = useState<string>('');
+  const fretInputTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [detectedBpm, setDetectedBpm] = useState<number | null>(null);
+  const [cifraText, setCifraText] = useState<string>('');
+  const [cifraEdited, setCifraEdited] = useState(false);
   const [isLoaded, setIsLoaded] = useState(false);
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentBeat, setCurrentBeat] = useState<number | null>(null);
   const [bpm, setBpm] = useState(80);
+  const [bpmInput, setBpmInput] = useState('80');
   const [selectedFret, setSelectedFret] = useState(0);
   const [selectedTech, setSelectedTech] = useState<Technique | null>(null);
+  const [slideToValue, setSlideToValue] = useState<number>(0); // target fret for slides
+  const [muteAfterValue, setMuteAfterValue] = useState<number>(2); // beats until mute
   const [capo, setCapo] = useState(0);
   const [hoveredCell, setHoveredCell] = useState<{ b: number; s: number } | null>(null);
   const [keyRoot, setKeyRoot] = useState<string>('E');
@@ -321,22 +346,70 @@ const TabmakerPage = () => {
   const keyModeRef = useRef(keyMode);
   keyModeRef.current = keyMode;
 
-  // Continuous drag-to-scroll on grid
+  // Continuous drag-to-scroll — only activate if mouse moved > 4px
   const scrollRef = useRef<HTMLDivElement>(null);
-  const dragRef = useRef<{ startX: number; startScrollLeft: number } | null>(null);
+  const dragRef = useRef<{ startX: number; startScrollLeft: number; moved: boolean } | null>(null);
 
   const onDragStart = useCallback((clientX: number) => {
-    dragRef.current = { startX: clientX, startScrollLeft: scrollRef.current?.scrollLeft ?? 0 };
+    dragRef.current = { startX: clientX, startScrollLeft: scrollRef.current?.scrollLeft ?? 0, moved: false };
   }, []);
 
   const onDragMove = useCallback((clientX: number) => {
     if (!dragRef.current || !scrollRef.current) return;
     const dx = dragRef.current.startX - clientX;
+    if (!dragRef.current.moved && Math.abs(dx) < 5) return;
+    dragRef.current.moved = true;
     scrollRef.current.scrollLeft = dragRef.current.startScrollLeft + dx;
   }, []);
 
   const onDragEnd = useCallback(() => {
     dragRef.current = null;
+  }, []);
+
+  // ── Undo / Redo ────────────────────────────────────────────────
+  // Call commit() BEFORE applying a mutation to save the current state
+  const commit = useCallback(() => {
+    historyRef.current = [
+      ...historyRef.current.slice(-49),
+      { grid: gridRef.current.map(c => [...c]), beats: beatsRef.current, lyrics: { ...lyricsRef.current }, chords: { ...chordsRef.current } },
+    ];
+    futureRef.current = [];
+    setCanUndo(true);
+    setCanRedo(false);
+  }, []);
+
+  const undo = useCallback(() => {
+    const past = historyRef.current;
+    if (!past.length) return;
+    const prev = past[past.length - 1];
+    futureRef.current = [
+      { grid: gridRef.current.map(c => [...c]), beats: beatsRef.current, lyrics: { ...lyricsRef.current }, chords: { ...chordsRef.current } },
+      ...futureRef.current.slice(0, 49),
+    ];
+    historyRef.current = past.slice(0, -1);
+    setGrid(prev.grid);
+    setBeats(prev.beats);
+    setLyrics(prev.lyrics);
+    setChords(prev.chords ?? {});
+    setCanUndo(past.length > 1);
+    setCanRedo(true);
+  }, []);
+
+  const redo = useCallback(() => {
+    const future = futureRef.current;
+    if (!future.length) return;
+    const next = future[0];
+    historyRef.current = [
+      ...historyRef.current.slice(-49),
+      { grid: gridRef.current.map(c => [...c]), beats: beatsRef.current, lyrics: { ...lyricsRef.current }, chords: { ...chordsRef.current } },
+    ];
+    futureRef.current = future.slice(1);
+    setGrid(next.grid);
+    setBeats(next.beats);
+    setLyrics(next.lyrics);
+    setChords(next.chords ?? {});
+    setCanUndo(true);
+    setCanRedo(future.length > 1);
   }, []);
 
   // Toggle 16th-note subdivision
@@ -382,6 +455,7 @@ const TabmakerPage = () => {
   const [transcribeProgress, setTranscribeProgress] = useState(0);
   const [transcribeStatus, setTranscribeStatus] = useState('');
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const importInputRef = useRef<HTMLInputElement>(null);
   const bpmRef = useRef(bpm);
   bpmRef.current = bpm;
 
@@ -484,10 +558,85 @@ const TabmakerPage = () => {
     }
   };
 
+  // ── Auto-save to localStorage ──────────────────────────────────────────────
+  const [lastSaved, setLastSaved] = useState<Date | null>(null);
+  const [structureMode, setStructureMode] = useState(false);
+  const [showAudioPanel, setShowAudioPanel] = useState(false);
+
+  // Load on mount
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if (!raw) return;
+      const s = JSON.parse(raw);
+      if (s.beats)   setBeats(s.beats);
+      if (s.bpm)     setBpm(s.bpm);
+      if (s.capo !== undefined) setCapo(s.capo);
+      if (s.keyRoot) setKeyRoot(s.keyRoot);
+      if (s.keyMode) setKeyMode(s.keyMode);
+      if (s.subdivMode !== undefined) setSubdivMode(s.subdivMode);
+      if (s.lyrics)  setLyrics(s.lyrics);
+      if (s.chords)  setChords(s.chords);
+      if (s.grid)    setGrid(s.grid);
+      if (s.detectedBpm !== undefined) setDetectedBpm(s.detectedBpm);
+      if (s.cifraText) { setCifraText(s.cifraText); setCifraEdited(true); }
+      setLastSaved(new Date(s.savedAt));
+    } catch { /* ignore corrupted data */ }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Save whenever content changes (debounced 600ms)
+  useEffect(() => {
+    const tid = setTimeout(() => {
+      try {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify({
+          grid, beats, bpm, capo, keyRoot, keyMode, subdivMode, lyrics, chords,
+          detectedBpm, ...(cifraEdited ? { cifraText } : {}), savedAt: new Date().toISOString(),
+        }));
+        setLastSaved(new Date());
+      } catch { /* storage full — ignore */ }
+    }, 600);
+    return () => clearTimeout(tid);
+  }, [grid, beats, bpm, capo, keyRoot, keyMode, subdivMode, lyrics, chords, detectedBpm, cifraText, cifraEdited]);
+
+  const exportTab = () => {
+    const data = { grid, beats, bpm, capo, keyRoot, keyMode, subdivMode, lyrics, chords, detectedBpm, ...(cifraEdited ? { cifraText } : {}) };
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `tablatura-${new Date().toISOString().slice(0, 10)}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const importTab = (file: File) => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        const s = JSON.parse(e.target?.result as string);
+        stop();
+        if (s.beats)   setBeats(s.beats);
+        if (s.bpm)     setBpm(s.bpm);
+        if (s.capo !== undefined) setCapo(s.capo);
+        if (s.keyRoot) setKeyRoot(s.keyRoot);
+        if (s.keyMode) setKeyMode(s.keyMode);
+        if (s.subdivMode !== undefined) setSubdivMode(s.subdivMode);
+        if (s.lyrics)  setLyrics(s.lyrics);
+        if (s.chords)  setChords(s.chords);
+        if (s.grid)    setGrid(s.grid);
+        if (s.detectedBpm !== undefined) setDetectedBpm(s.detectedBpm);
+        if (s.cifraText) { setCifraText(s.cifraText); setCifraEdited(true); } else { setCifraEdited(false); setCifraText(''); }
+        if (scrollRef.current) scrollRef.current.scrollLeft = 0;
+      } catch { alert('Arquivo inválido'); }
+    };
+    reader.readAsText(file);
+  };
+
   // Metronome
   const [metronomeOn, setMetronomeOn] = useState(false);
   const [metroBeat, setMetroBeat] = useState(-1);
-  const [tapTimes, setTapTimes] = useState<number[]>([]);
+  const [, setTapTimes] = useState<number[]>([]);
   const metroSeqRef = useRef<Tone.Sequence<number> | null>(null);
   const metroSynthRef = useRef<Tone.Synth | null>(null);
   const metronomeOnRef = useRef(metronomeOn);
@@ -508,59 +657,339 @@ const TabmakerPage = () => {
     }
   }, [currentBeat]);
 
-  const samplerRef = useRef<Tone.Sampler | null>(null);
+  // Selection range helper (full columns)
+  const getSelRange = () => {
+    if (selectedBeat === null || selAnchor === null) return null;
+    return { b1: Math.min(selAnchor, selectedBeat), b2: Math.max(selAnchor, selectedBeat) };
+  };
+  const selRange = getSelRange();
+  const isInSelection = (b: number) =>
+    selRange ? b >= selRange.b1 && b <= selRange.b2 : false;
+
+  const samplerRef = useRef<Tone.Sampler | null>(null);     // treble (G, B, e)
+  const samplerBassRef = useRef<Tone.Sampler | null>(null); // bass   (E, A, D)
   const seqRef = useRef<Tone.Sequence<number> | null>(null);
   const gridRef = useRef(grid);
   gridRef.current = grid;
+  const beatsRef = useRef(beats);
+  beatsRef.current = beats;
+  const lyricsRef = useRef(lyrics);
+  lyricsRef.current = lyrics;
+  const chordsRef = useRef(chords);
+  chordsRef.current = chords;
   const capoRef = useRef(capo);
   capoRef.current = capo;
 
-  // Load nylon guitar samples with soft audio chain
+  // Load FluidR3_GM nylon guitar soundfont (one sample per chromatic note = zero pitch-shifting)
   useEffect(() => {
-    // Lowpass filter — cuts harsh highs for a warmer nylon tone
-    const filter = new Tone.Filter({
-      frequency: 4000,
-      type: 'lowpass',
-      rolloff: -24,
-    });
+    let disposed = false;
+    let samplerInstance: Tone.Sampler | null = null;
 
-    // Subtle reverb — small room for natural resonance
-    const reverb = new Tone.Reverb({ decay: 1.4, wet: 0.18 });
+    // ── Cadeia mínima: Sampler → Reverb sutil → Volume → Out ──────────────
+    // Sem EQ — o FluidR3_GM já tem timbre equilibrado, como no tab-maker.com
+    const reverb = new Tone.Reverb({ decay: 0.8, preDelay: 0.01, wet: 0.10 });
+    const masterVol = new Tone.Volume(3);
+    reverb.chain(masterVol, Tone.getDestination());
 
-    // Volume — slightly attenuated
-    const vol = new Tone.Volume(-3);
+    // Cadeia para cordas graves (D, A, E) — mais corpo e escuridão
+    const bassEq = new Tone.EQ3({ low: 6, mid: -3, high: -8 });
+    const bassReverb = new Tone.Reverb({ decay: 1.0, preDelay: 0.01, wet: 0.12 });
+    const bassVol = new Tone.Volume(4);
+    bassEq.chain(bassReverb, bassVol, Tone.getDestination());
 
-    // Chain: sampler → filter → reverb → vol → output
-    filter.chain(reverb, vol, Tone.getDestination());
+    // FluidR3_GM acoustic_guitar_nylon — soundfont padrão usado por tab editors
+    // Cada nota cromática tem sua própria amostra = zero pitch-shifting = som mais natural possível
+    const SOUNDFONT_URL =
+      'https://gleitz.github.io/midi-js-soundfonts/FluidR3_GM/acoustic_guitar_nylon-mp3.js';
 
-    const sampler = new Tone.Sampler({
-      urls: {
-        E2: 'E2.mp3',
-        A2: 'A2.mp3',
-        D3: 'D3.mp3',
-        G3: 'G3.mp3',
-        B3: 'B3.mp3',
-        E4: 'E4.mp3',
-        A4: 'A4.mp3',
-      },
-      baseUrl: BASE_URL,
-      release: 2.5,   // slow natural decay, like a plucked nylon string
-      onload: () => setIsLoaded(true),
-    }).connect(filter);
+    (async () => {
+      try {
+        const res = await fetch(SOUNDFONT_URL);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const text = await res.text();
+        if (disposed) return;
 
-    samplerRef.current = sampler;
+        // Parse note → data URI pairs from the JS file
+        // Format: "NoteName": "data:audio/mp3;base64,..."
+        const urls: Record<string, string> = {};
+        let pos = text.indexOf('= {');
+        if (pos === -1) throw new Error('Invalid soundfont format');
+        pos += 3;
+
+        while (pos < text.length) {
+          // Find next key
+          const kStart = text.indexOf('"', pos);
+          if (kStart === -1) break;
+          const kEnd = text.indexOf('"', kStart + 1);
+          if (kEnd === -1) break;
+          const key = text.substring(kStart + 1, kEnd);
+
+          // Skip past key
+          pos = kEnd + 1;
+
+          // Check if this is a note name (A0-G#8)
+          if (!/^[A-G][b#]?\d+$/.test(key)) continue;
+
+          // Find value (data URI)
+          const vStart = text.indexOf('"', pos);
+          if (vStart === -1) break;
+          let vEnd = vStart + 1;
+          while (vEnd < text.length && text[vEnd] !== '"') vEnd++;
+          if (vEnd >= text.length) break;
+
+          urls[key] = text.substring(vStart + 1, vEnd);
+          pos = vEnd + 1;
+        }
+
+        if (disposed) return;
+
+        let loadCount = 0;
+        const checkLoaded = () => { loadCount++; if (loadCount >= 2 && !disposed) setIsLoaded(true); };
+
+        const sampler = new Tone.Sampler({
+          urls,
+          release: 1,
+          onload: checkLoaded,
+        }).connect(reverb);
+
+        // Sampler separado para cordas graves (D=3, A=4, E=5) com detune -15 cents
+        const bassSampler = new Tone.Sampler({
+          urls,
+          release: 1.2,
+          onload: checkLoaded,
+        });
+        bassSampler.set({ detune: -30 });
+        bassSampler.connect(bassEq);
+
+        if (disposed) {
+          sampler.dispose();
+          bassSampler.dispose();
+          return;
+        }
+
+        samplerInstance = sampler;
+        samplerRef.current = sampler;
+        samplerBassRef.current = bassSampler;
+      } catch (e) {
+        console.error('Failed to load soundfont:', e);
+      }
+    })();
 
     return () => {
+      disposed = true;
       Tone.getTransport().stop();
       seqRef.current?.dispose();
-      sampler.dispose();
-      filter.dispose();
-      reverb.dispose();
-      vol.dispose();
+      samplerInstance?.dispose();
+      samplerBassRef.current?.dispose();
+      reverb.dispose(); masterVol.dispose();
+      bassEq.dispose(); bassReverb.dispose(); bassVol.dispose();
       metroSeqRef.current?.dispose();
       metroSynthRef.current?.dispose();
     };
   }, []);
+
+  // Keyboard shortcuts: Ctrl+Z undo, Ctrl+Y redo, arrow keys navigate, number keys set fret
+  useEffect(() => {
+    const colsPerBar = subdivModeRef.current ? 8 : 4;
+    const handler = (e: KeyboardEvent) => {
+      if ((e.target as HTMLElement).tagName === 'INPUT' || (e.target as HTMLElement).tagName === 'TEXTAREA') return;
+      if (e.ctrlKey && !e.shiftKey && e.key === 'z') { e.preventDefault(); undo(); return; }
+      if ((e.ctrlKey && e.key === 'y') || (e.ctrlKey && e.shiftKey && e.key === 'z')) { e.preventDefault(); redo(); return; }
+      // Arrow left/right — move 1 beat; with Shift — extend selection
+      if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+        e.preventDefault();
+        setFretInputBuffer('');
+        if (e.shiftKey) {
+          // If no cell selected yet, start from startBeat (playback cursor)
+          if (selectedBeat === null) {
+            setSelectedBeat(startBeatRef.current);
+            setSelAnchor(startBeatRef.current);
+          } else if (selAnchor === null) {
+            setSelAnchor(selectedBeat);
+          }
+        } else {
+          setSelAnchor(null);
+        }
+        setSelectedBeat((prev) => {
+          const cur = prev ?? startBeatRef.current;
+          const next = e.key === 'ArrowLeft'
+            ? Math.max(0, cur - 1)
+            : Math.min(beatsRef.current - 1, cur + 1);
+          if (scrollRef.current) {
+            const targetX = next * 40 + 40 - scrollRef.current.clientWidth / 2;
+            scrollRef.current.scrollLeft = Math.max(0, targetX);
+          }
+          return next;
+        });
+      }
+      // Arrow up/down — move between strings
+      if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+        e.preventDefault();
+        setFretInputBuffer('');
+        if (selectedBeat === null) setSelectedBeat(startBeatRef.current);
+        setSelectedString((prev) => {
+          return e.key === 'ArrowUp' ? Math.max(0, prev - 1) : Math.min(STRING_COUNT - 1, prev + 1);
+        });
+      }
+      // Ctrl+C — copy selection or single column (including lyrics & chords)
+      if (e.ctrlKey && e.key === 'c' && selectedBeat !== null) {
+        e.preventDefault();
+        const b1 = selAnchor !== null ? Math.min(selAnchor, selectedBeat) : selectedBeat;
+        const b2 = selAnchor !== null ? Math.max(selAnchor, selectedBeat) : selectedBeat;
+        const copiedCells: CellData[][] = [];
+        const copiedLyrics: Record<number, string> = {};
+        const copiedChords: Record<number, ChordLabel> = {};
+        for (let b = b1; b <= b2; b++) {
+          const col: CellData[] = [];
+          for (let s = 0; s < STRING_COUNT; s++) {
+            const cell = gridRef.current[b]?.[s] ?? null;
+            col.push(cell ? { ...cell } : null);
+          }
+          copiedCells.push(col);
+          const idx = b - b1;
+          if (lyricsRef.current[b]) copiedLyrics[idx] = lyricsRef.current[b];
+          if (chordsRef.current[b]) copiedChords[idx] = { ...chordsRef.current[b] };
+        }
+        clipboardRef.current = { cells: copiedCells, lyrics: copiedLyrics, chords: copiedChords };
+      }
+      // Ctrl+V — paste at current beat (including lyrics & chords), auto-expand grid if needed
+      if (e.ctrlKey && e.key === 'v' && selectedBeat !== null && clipboardRef.current) {
+        e.preventDefault();
+        commit();
+        const clip = clipboardRef.current;
+        const needed = selectedBeat + clip.cells.length;
+        const cpb = subdivModeRef.current ? 8 : 4;
+        if (needed > beatsRef.current) {
+          const extra = Math.ceil((needed - beatsRef.current) / cpb) * cpb;
+          setBeats((b) => b + extra);
+          setGrid((prev) => [
+            ...prev,
+            ...Array.from({ length: extra }, () => Array(STRING_COUNT).fill(null)),
+          ]);
+        }
+        setGrid((prev) => {
+          const next = prev.map((b) => [...b]);
+          for (let db = 0; db < clip.cells.length; db++) {
+            const tb = selectedBeat + db;
+            if (tb >= next.length) break;
+            for (let s = 0; s < clip.cells[db].length; s++) {
+              if (s >= STRING_COUNT) break;
+              next[tb][s] = clip.cells[db][s] ? { ...clip.cells[db][s]! } : null;
+            }
+          }
+          return next;
+        });
+        setLyrics((prev) => {
+          const next = { ...prev };
+          for (const [idx, text] of Object.entries(clip.lyrics)) {
+            const tb = selectedBeat + Number(idx);
+            next[tb] = text;
+          }
+          return next;
+        });
+        setChords((prev) => {
+          const next = { ...prev };
+          for (const [idx, chord] of Object.entries(clip.chords)) {
+            const tb = selectedBeat + Number(idx);
+            next[tb] = { ...chord };
+          }
+          return next;
+        });
+      }
+      // Escape — clear selection
+      if (e.key === 'Escape') {
+        setSelAnchor(null);
+      }
+      // Number keys (0-9) — set fret or muteAfter on selected cell
+      if (/^[0-9]$/.test(e.key) && selectedBeat !== null) {
+        e.preventDefault();
+        // Check if selected cell has mute technique — edit muteAfter instead
+        const existingCell = gridRef.current[selectedBeat]?.[selectedString];
+        if (existingCell && existingCell.tech === 'mute') {
+          setFretInputBuffer((prevBuf) => {
+            const newBuf = prevBuf + e.key;
+            const num = parseInt(newBuf, 10);
+            if (num > 32 || num < 1) {
+              const single = parseInt(e.key, 10);
+              if (single >= 1) {
+                commit();
+                setGrid((prev) => {
+                  const next = prev.map((b) => [...b]);
+                  next[selectedBeat][selectedString] = { ...existingCell, muteAfter: single };
+                  return next;
+                });
+              }
+              return e.key;
+            }
+            commit();
+            setGrid((prev) => {
+              const next = prev.map((b) => [...b]);
+              next[selectedBeat][selectedString] = { ...existingCell, muteAfter: num };
+              return next;
+            });
+            if (fretInputTimer.current) clearTimeout(fretInputTimer.current);
+            fretInputTimer.current = setTimeout(() => setFretInputBuffer(''), 800);
+            return newBuf;
+          });
+        } else {
+          setFretInputBuffer((prevBuf) => {
+            const newBuf = prevBuf + e.key;
+            const fretNum = parseInt(newBuf, 10);
+
+            // If fret exceeds max, start fresh with just this digit
+            if (fretNum > MAX_FRET) {
+              const singleFret = parseInt(e.key, 10);
+              applyFretToCell(selectedBeat, selectedString, singleFret);
+              return e.key;
+            }
+
+            applyFretToCell(selectedBeat, selectedString, fretNum);
+
+            // Clear buffer after 800ms of no typing
+            if (fretInputTimer.current) clearTimeout(fretInputTimer.current);
+            fretInputTimer.current = setTimeout(() => setFretInputBuffer(''), 800);
+
+            return newBuf;
+          });
+        }
+      }
+      // Delete/Backspace — clear selected cell or selection
+      if ((e.key === 'Delete' || e.key === 'Backspace') && selectedBeat !== null) {
+        e.preventDefault();
+        setFretInputBuffer('');
+        commit();
+        if (selAnchor !== null) {
+          const b1 = Math.min(selAnchor, selectedBeat);
+          const b2 = Math.max(selAnchor, selectedBeat);
+          setGrid((prev) => {
+            const next = prev.map((b) => [...b]);
+            for (let b = b1; b <= b2; b++) {
+              for (let s = 0; s < STRING_COUNT; s++) {
+                next[b][s] = null;
+              }
+            }
+            return next;
+          });
+          setSelAnchor(null);
+        } else {
+          setGrid((prev) => {
+            const next = prev.map((b) => [...b]);
+            next[selectedBeat][selectedString] = null;
+            return next;
+          });
+        }
+      }
+      // Enter — set startBeat to selectedBeat
+      if (e.key === 'Enter') {
+        setSelectedBeat((cur) => {
+          if (cur !== null && !isPlayingRef.current) setStartBeat(cur);
+          return cur;
+        });
+      }
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [undo, redo, selectedBeat, selectedString]);
 
   // Sync BPM live
   useEffect(() => {
@@ -615,16 +1044,38 @@ const TabmakerPage = () => {
         const intervals = recent.slice(1).map((t, i) => t - recent[i]);
         const avg = intervals.reduce((a, b) => a + b, 0) / intervals.length;
         const newBpm = Math.round(60000 / avg);
-        if (newBpm >= 40 && newBpm <= 200) setBpm(newBpm);
+        if (newBpm >= 40 && newBpm <= 200) { setBpm(newBpm); setBpmInput(String(newBpm)); }
       }
       return recent;
     });
   }, []);
 
   const toggleCell = (beat: number, string: number) => {
+    commit();
     setGrid((prev) => {
       const next = prev.map((b) => [...b]);
-      next[beat][string] = next[beat][string] !== null ? null : { fret: selectedFret, tech: selectedTech ?? undefined };
+      const isSlide = selectedTech === 'slide-up' || selectedTech === 'slide-down';
+      next[beat][string] = next[beat][string] !== null ? null : {
+        fret: selectedFret,
+        tech: selectedTech ?? undefined,
+        ...(isSlide ? { slideTo: slideToValue } : {}),
+        ...(selectedTech === 'mute' ? { muteAfter: muteAfterValue } : {}),
+      };
+      return next;
+    });
+  };
+
+  const applyFretToCell = (beat: number, string: number, fret: number) => {
+    commit();
+    setGrid((prev) => {
+      const next = prev.map((b) => [...b]);
+      const isSlide = selectedTech === 'slide-up' || selectedTech === 'slide-down';
+      next[beat][string] = {
+        fret,
+        tech: selectedTech ?? undefined,
+        ...(isSlide ? { slideTo: slideToValue } : {}),
+        ...(selectedTech === 'mute' ? { muteAfter: muteAfterValue } : {}),
+      };
       return next;
     });
   };
@@ -636,49 +1087,94 @@ const TabmakerPage = () => {
     const transport = Tone.getTransport();
     transport.bpm.value = bpm;
 
-    const beatIndices = Array.from({ length: grid.length }, (_, i) => i);
+    const from = startBeatRef.current;
+    const beatIndices = Array.from({ length: grid.length - from }, (_, i) => from + i);
+
+    // Precompute per-string natural sustain durations (in beats).
+    // A note rings until the next note on the same string — exactly like a real guitar.
+    const snapshot = gridRef.current;
+    const totalBeats = snapshot.length;
+    const beatUnit = subdivModeRef.current ? '16n' : '8n';
+    const beatSecs = Tone.Time(beatUnit).toSeconds();
+
+    // sustainBeats[beat][string] = seconds until next note on that string (or 8s cap)
+    const sustainSecs: number[][] = Array.from({ length: totalBeats }, () => Array(STRING_COUNT).fill(0));
+    for (let s = 0; s < STRING_COUNT; s++) {
+      for (let b = from; b < totalBeats; b++) {
+        if (snapshot[b][s] !== null) {
+          let next = totalBeats;
+          for (let nb = b + 1; nb < totalBeats; nb++) {
+            if (snapshot[nb][s] !== null) { next = nb; break; }
+          }
+          // Clamp: ring at most 5 seconds (realistic nylon guitar sustain)
+          sustainSecs[b][s] = Math.min((next - b) * beatSecs, 5.0);
+        }
+      }
+    }
+
     const seq = new Tone.Sequence<number>(
       (time, beat) => {
         setCurrentBeat(beat);
         const col = gridRef.current[beat];
+        // Detect if any cell in this beat has arpeggio technique
+        const hasArpeggio = col.some((c) => c !== null && c.tech === 'arpeggio');
         col.forEach((cell, s) => {
-          if (cell !== null && samplerRef.current?.loaded) {
-            const duration = s <= 2 ? '8n' : '4n';
+          // Use bass sampler for low strings (D=3, A=4, E=5)
+          const sampler = s >= 3 ? samplerBassRef.current : samplerRef.current;
+          if (cell !== null && sampler?.loaded) {
+            // Natural sustain: ring until next note on same string
+            const rawDuration = sustainSecs[beat]?.[s] ?? beatSecs;
+            // Mute technique: force sustain to exactly muteAfter beats
+            const duration = cell.tech === 'mute' && cell.muteAfter
+              ? cell.muteAfter * beatSecs
+              : rawDuration;
             const note = noteAtFret(s, cell.fret);
-            const sampler = samplerRef.current!;
+            // Micro-jitter aleatório: evita cancelamento de fase sem criar arpejo artificial
+            const jitter = hasArpeggio ? (STRING_COUNT - 1 - s) * 0.020 : Math.random() * 0.005;
+            const t = time + jitter;
             switch (cell.tech) {
+              case 'arpeggio':
+                sampler.triggerAttackRelease(note, duration, t, 0.65 + Math.random() * 0.10);
+                break;
+              case 'mute':
+                sampler.triggerAttackRelease(note, duration, t, 0.75 + Math.random() * 0.10);
+                break;
               case 'hammer':
-                // Hammer-on: softer attack — finger falls onto fret without pick
-                sampler.triggerAttackRelease(note, duration, time, 0.45);
+                sampler.triggerAttackRelease(note, duration, t, 0.45 + Math.random() * 0.08);
                 break;
               case 'pull':
-                // Pull-off: even softer, slight delay simulation
-                sampler.triggerAttackRelease(note, duration, time, 0.35);
+                sampler.triggerAttackRelease(note, duration, t, 0.35 + Math.random() * 0.07);
                 break;
-              case 'slide-up': {
-                // Slide up: briefly sound 2 semitones below, then target note
-                const slideOffset = Tone.Time('32n').toSeconds();
-                const fromNote = noteAtFret(s, Math.max(0, cell.fret - 2));
-                sampler.triggerAttackRelease(fromNote, '32n', time, 0.5);
-                sampler.triggerAttackRelease(note, duration, time + slideOffset, 1.0);
-                break;
-              }
+              case 'slide-up':
               case 'slide-down': {
-                // Slide down: briefly sound 2 semitones above, then target note
-                const slideOffset = Tone.Time('32n').toSeconds();
-                const fromNote = noteAtFret(s, cell.fret + 2);
-                sampler.triggerAttackRelease(fromNote, '32n', time, 0.5);
-                sampler.triggerAttackRelease(note, duration, time + slideOffset, 1.0);
+                const targetFret = cell.fret;
+                const fromFret = cell.tech === 'slide-up'
+                  ? (cell.slideTo !== undefined ? cell.slideTo : Math.max(0, targetFret - 2))
+                  : (cell.slideTo !== undefined ? cell.slideTo : targetFret + 2);
+                const steps = Math.abs(targetFret - fromFret);
+                if (steps === 0) {
+                  sampler.triggerAttackRelease(note, duration, t, 0.7);
+                } else {
+                  const stepTime = beatSecs / (steps + 1);
+                  const dir = targetFret > fromFret ? 1 : -1;
+                  for (let i = 0; i <= steps; i++) {
+                    const slideFret = fromFret + dir * i;
+                    const slideNote = noteAtFret(s, slideFret);
+                    const vel = i === 0 ? 0.55 : i === steps ? 0.85 : 0.25;
+                    const noteDur = i < steps ? '64n' : duration;
+                    sampler.triggerAttackRelease(slideNote, noteDur, t + i * stepTime, vel);
+                  }
+                }
                 break;
               }
               default:
-                sampler.triggerAttackRelease(note, duration, time);
+                sampler.triggerAttackRelease(note, duration, t, 0.75 + Math.random() * 0.10);
             }
           }
         });
       },
       beatIndices,
-      subdivModeRef.current ? '16n' : '8n'
+      beatUnit
     );
 
     seqRef.current = seq;
@@ -705,595 +1201,895 @@ const TabmakerPage = () => {
     else play();
   };
 
+  const colsPerBarNow = subdivMode ? 8 : 4;
+
+  const addBars = (n = 1) => {
+    commit();
+    const add = n * colsPerBarNow;
+    setBeats((b) => b + add);
+    setGrid((g) => [
+      ...g,
+      ...Array.from({ length: add }, () => Array(STRING_COUNT).fill(null)),
+    ]);
+  };
+
+  const removeBars = (n = 1) => {
+    commit();
+    const remove = n * colsPerBarNow;
+    setBeats((b) => {
+      const next = Math.max(colsPerBarNow, b - remove);
+      setGrid((g) => g.slice(0, next).map((col) => [...col]));
+      return next;
+    });
+  };
+
+  // Insert a single empty beat column before beat `atBeat`
+  const insertBeat = (atBeat: number) => {
+    commit();
+    const empty: CellData[] = Array(STRING_COUNT).fill(null);
+    setGrid((g) => [...g.slice(0, atBeat), empty, ...g.slice(atBeat)]);
+    setBeats((b) => b + 1);
+    setStartBeat((s) => (s >= atBeat ? s + 1 : s));
+    setLyrics((prev) => {
+      const next: Record<number, string> = {};
+      Object.entries(prev).forEach(([k, v]) => {
+        const beat = Number(k);
+        next[beat >= atBeat ? beat + 1 : beat] = v;
+      });
+      return next;
+    });
+  };
+
+  // Delete beat column at `atBeat`
+  const deleteBeat = (atBeat: number) => {
+    if (beats <= 1) return;
+    commit();
+    setGrid((g) => g.filter((_, i) => i !== atBeat));
+    setBeats((b) => Math.max(1, b - 1));
+    setStartBeat((s) => (s > atBeat ? s - 1 : Math.min(s, beats - 2)));
+    setLyrics((prev) => {
+      const next: Record<number, string> = {};
+      Object.entries(prev).forEach(([k, v]) => {
+        const beat = Number(k);
+        if (beat === atBeat) return;
+        next[beat > atBeat ? beat - 1 : beat] = v;
+      });
+      return next;
+    });
+  };
+
   const reset = () => {
     stop();
+    historyRef.current = [];
+    futureRef.current = [];
+    setCanUndo(false);
+    setCanRedo(false);
     setBeats(DEFAULT_BEATS);
     if (scrollRef.current) scrollRef.current.scrollLeft = 0;
     setDetectedBpm(null);
     setGrid(emptyGrid(DEFAULT_BEATS));
     setLyrics({});
+    setChords({});
     setSubdivMode(false);
+    setStartBeat(0);
+    localStorage.removeItem(STORAGE_KEY);
   };
 
   return (
-    <div className="min-h-screen bg-[#060607] text-stone-200 p-4 md:p-8">
-      <div className="max-w-5xl mx-auto">
+    <div className="h-screen bg-[#060607] text-stone-200 flex flex-col overflow-y-auto" style={{ scrollbarWidth: 'thin' }}>
 
-        {/* Header */}
-        <div className="flex items-center gap-4 mb-8">
-          <Link
-            to="/"
-            className="flex items-center justify-center w-9 h-9 rounded-lg bg-stone-900 border border-stone-800 hover:border-stone-700 transition-colors"
-          >
-            <ArrowLeft className="w-4 h-4 text-stone-400" />
-          </Link>
-          <div>
-            <h1 className="text-xl font-semibold text-stone-100">Tabmaker</h1>
-            <p className="text-xs text-stone-500">Violão de Nylon</p>
-          </div>
+      {/* ═══ Navbar ═══ */}
+      <div className="shrink-0 border-b border-stone-800 bg-stone-950">
+        {/* Conteúdo da navbar em flex com scroll horizontal */}
+        <div className="flex items-center gap-1.5 px-3 h-12 overflow-x-auto" style={{ scrollbarWidth: 'none' }}>
 
-          <div className="ml-auto">
-            {!isLoaded ? (
-              <div className="flex items-center gap-2 text-xs text-stone-500 bg-stone-900 border border-stone-800 px-3 py-1.5 rounded-lg">
-                <Loader2 className="w-3 h-3 animate-spin" />
-                Carregando samples…
-              </div>
-            ) : (
-              <div className="flex items-center gap-2 text-xs text-emerald-400 bg-emerald-950/30 border border-emerald-900/50 px-3 py-1.5 rounded-lg">
-                <div className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
-                Pronto para tocar
-              </div>
-            )}
-          </div>
-        </div>
-
-        {/* Controls */}
-        <div className="flex flex-wrap items-center gap-4 mb-4 p-4 bg-stone-900/40 border border-stone-800 rounded-xl">
-
-          {/* ── Importar Áudio ── */}
-          <div className="mb-4 p-4 bg-stone-900/40 border border-stone-800 rounded-xl w-full">
-            <div className="flex items-center gap-2 mb-3">
-              <span className="text-xs font-medium text-stone-400">Importar Áudio</span>
-              <span className="text-xs text-stone-600">— a IA detecta as notas e preenche a grade automaticamente</span>
+          {/* — Esquerda: logo + título — */}
+          <div className="flex items-center gap-2 shrink-0">
+            <Link to="/" className="flex items-center justify-center w-8 h-8 rounded-lg bg-stone-900 border border-stone-800 hover:border-stone-700 transition-colors">
+              <ArrowLeft className="w-4 h-4 text-stone-400" />
+            </Link>
+            <div className="leading-none">
+              <span className="text-sm font-semibold text-stone-100">Tabmaker</span>
+              <span className="text-[10px] text-stone-600 ml-1.5">Violão Nylon</span>
             </div>
-
-            <div className="flex flex-wrap items-center gap-3">
-
-              {/* Key selector */}
-              <div className="flex items-center gap-2 flex-wrap">
-                <span className="text-xs text-stone-500">Tom:</span>
-                <div className="flex gap-1 flex-wrap">
-                  {Object.keys(KEY_ROOTS).map((k) => (
-                    <button
-                      key={k}
-                      onClick={() => setKeyRoot(k)}
-                      className={`px-2 py-1 rounded text-xs font-mono transition-colors ${
-                        keyRoot === k
-                          ? 'bg-stone-200 text-stone-950 font-bold'
-                          : 'bg-stone-800 text-stone-400 hover:bg-stone-700'
-                      }`}
-                    >
-                      {k}
-                    </button>
-                  ))}
-                </div>
-                <div className="flex rounded overflow-hidden border border-stone-700">
-                  {(['major', 'minor'] as const).map((m) => (
-                    <button
-                      key={m}
-                      onClick={() => setKeyMode(m)}
-                      className={`px-2.5 py-1 text-xs transition-colors ${
-                        keyMode === m
-                          ? 'bg-stone-400 text-stone-950 font-semibold'
-                          : 'bg-stone-800 text-stone-400 hover:bg-stone-700'
-                      }`}
-                    >
-                      {m === 'major' ? 'Maior' : 'Menor'}
-                    </button>
-                  ))}
-                </div>
-                <span className="text-xs text-stone-600 font-medium">
-                  {keyRoot} {keyMode === 'major' ? 'Maior' : 'Menor'}
-                  {capo > 0 ? ` · capo ${capo}` : ''}
-                </span>
-              </div>
-
-              <div className="w-full border-t border-stone-800/60 my-1" />
-
-              {/* File picker */}
-              <input
-                ref={fileInputRef}
-                type="file"
-                accept="audio/*"
-                className="hidden"
-                onChange={(e) => {
-                  const f = e.target.files?.[0] ?? null;
-                  setAudioFile(f);
-                  setTranscribeStatus('');
-                }}
-              />
-              <button
-                onClick={() => fileInputRef.current?.click()}
-                disabled={transcribing}
-                className="flex items-center gap-2 px-3 py-1.5 text-xs text-stone-300 bg-stone-800 border border-stone-700 rounded-lg hover:bg-stone-700 disabled:opacity-40 transition-colors"
-              >
-                <span>Escolher arquivo</span>
-              </button>
-
-              {audioFile && (
-                <span className="text-xs text-stone-400 truncate max-w-[180px]">
-                  {audioFile.name}
-                </span>
-              )}
-
-              <button
-                onClick={handleTranscribe}
-                disabled={!audioFile || transcribing}
-                className="flex items-center gap-2 px-4 py-1.5 text-xs font-semibold text-stone-950 bg-stone-200 rounded-lg hover:bg-white disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-              >
-                {transcribing ? (
-                  <><Loader2 className="w-3 h-3 animate-spin" />Analisando…</>
-                ) : (
-                  'Transcrever'
-                )}
-              </button>
-            </div>
-
-            {/* Progress bar */}
-            {transcribing && (
-              <div className="mt-3">
-                <div className="h-1.5 bg-stone-800 rounded-full overflow-hidden">
-                  <div
-                    className="h-full bg-stone-400 rounded-full transition-all duration-300"
-                    style={{ width: transcribeProgress + '%' }}
-                  />
-                </div>
-                <p className="mt-1.5 text-xs text-stone-500">{transcribeStatus}</p>
-              </div>
-            )}
-
-            {/* Status message when done */}
-            {!transcribing && transcribeStatus && (
-              <p className={`mt-2 text-xs ${
-                transcribeStatus.startsWith('⚠') ? 'text-red-400' : 'text-emerald-400'
-              }`}>{transcribeStatus}</p>
-            )}
           </div>
 
-          {/* Capo selector */}
-          <div className="flex items-center gap-1.5 flex-wrap">
-            <span className="text-xs text-stone-500 mr-1">Capotraste:</span>
-            {Array.from({ length: 8 }, (_, i) => (
-              <button
-                key={i}
-                onClick={() => setCapo(i)}
-                className={`w-7 h-7 rounded font-mono text-xs transition-colors ${
-                  capo === i
-                    ? 'bg-amber-400 text-stone-950 font-bold'
-                    : 'bg-stone-800/80 text-stone-400 hover:bg-stone-700'
-                }`}
-              >
-                {i === 0 ? '—' : i}
-              </button>
-            ))}
-          </div>
-
-          <div className="flex items-center gap-2 ml-auto">
-            <button
-              onClick={reset}
-              className="flex items-center gap-1.5 px-3 py-1.5 text-xs text-stone-400 bg-stone-900 border border-stone-800 rounded-lg hover:border-stone-700 transition-colors"
-            >
-              <Trash2 className="w-3.5 h-3.5" />
-              Limpar
-            </button>
-
-            <button
-              onClick={handlePlayPause}
-              disabled={!isLoaded}
-              className={`flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-lg transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
-                isPlaying
-                  ? 'bg-stone-700 text-stone-200 hover:bg-stone-600'
-                  : 'bg-stone-200 text-stone-950 hover:bg-white'
-              }`}
-            >
-              {isPlaying ? (
-                <Pause className="w-4 h-4" />
-              ) : (
-                <Play className="w-4 h-4" />
-              )}
+          {/* — Centro: transport + BPM + metrônomo — */}
+          <div className="flex items-center gap-1.5 flex-1 justify-center">
+            {/* Play / Parar */}
+            <button onClick={handlePlayPause} disabled={!isLoaded}
+              className={`shrink-0 flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg transition-colors disabled:opacity-40 ${
+                isPlaying ? 'bg-stone-700 text-stone-200 hover:bg-stone-600' : 'bg-stone-200 text-stone-950 hover:bg-white'
+              }`}>
+              {isPlaying ? <Pause className="w-3.5 h-3.5" /> : <Play className="w-3.5 h-3.5" />}
               {isPlaying ? 'Parar' : 'Tocar'}
             </button>
-          </div>
-        </div>
 
-        {/* ── Metrônomo ── */}
-        <div className="mb-4 p-4 bg-stone-900/40 border border-stone-800 rounded-xl">
-          <div className="flex flex-wrap items-center gap-4">
+            {/* Início */}
+            <button onClick={() => { setStartBeat(0); if (scrollRef.current) scrollRef.current.scrollLeft = 0; }}
+              title="Voltar ao início" disabled={isPlaying}
+              className="shrink-0 flex items-center gap-1 px-2.5 py-1.5 text-xs text-stone-400 bg-stone-900 border border-stone-800 rounded-lg hover:border-stone-700 disabled:opacity-30 transition-colors">
+              <SkipBack className="w-3.5 h-3.5" />
+              Início
+            </button>
 
-            {/* Toggle */}
-            <div className="flex items-center gap-2">
-              <Timer className="w-4 h-4 text-stone-500" />
-              <span className="text-xs text-stone-500 font-medium">Metrônomo</span>
-              <button
-                onClick={toggleMetronome}
-                className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 transition-colors duration-200 ${
-                  metronomeOn ? 'border-stone-400 bg-stone-400' : 'border-stone-700 bg-stone-800'
-                }`}
-              >
-                <span
-                  className={`pointer-events-none inline-block h-4 w-4 rounded-full bg-stone-950 shadow transition-transform duration-200 ${
-                    metronomeOn ? 'translate-x-4' : 'translate-x-0'
-                  }`}
-                />
+            {/* Voltar 4 compassos */}
+            <button onClick={() => { const cpb = subdivMode ? 8 : 4; const target = Math.max(0, startBeat - cpb * 4); setStartBeat(target); setSelectedBeat(target); if (scrollRef.current) { scrollRef.current.scrollLeft = Math.max(0, target * 40 - scrollRef.current.clientWidth / 2); } }}
+              title="Voltar 4 compassos" disabled={isPlaying}
+              className="shrink-0 flex items-center gap-1 px-2 py-1.5 text-xs text-stone-400 bg-stone-900 border-y border-l border-stone-800 rounded-l-lg hover:border-stone-700 disabled:opacity-30 transition-colors">
+              <ChevronLeft className="w-3.5 h-3.5" />
+            </button>
+            {/* Ir para compasso específico */}
+            <input
+              type="number"
+              min={1}
+              max={subdivMode ? beats / 8 : beats / 4}
+              value={Math.floor(startBeat / (subdivMode ? 8 : 4)) + 1}
+              onChange={(e) => {
+                const cpb = subdivMode ? 8 : 4;
+                const maxBar = Math.floor((beatsRef.current - 1) / cpb) + 1;
+                let bar = parseInt(e.target.value, 10);
+                if (isNaN(bar)) return;
+                bar = Math.max(1, Math.min(maxBar, bar));
+                const target = (bar - 1) * cpb;
+                setStartBeat(target);
+                setSelectedBeat(target);
+                if (scrollRef.current) { scrollRef.current.scrollLeft = Math.max(0, target * 40 - scrollRef.current.clientWidth / 2); }
+              }}
+              disabled={isPlaying}
+              title="Ir para compasso"
+              className="w-10 text-center text-xs text-stone-300 bg-stone-900 border-y border-stone-800 py-1.5 outline-none focus:bg-stone-800 disabled:opacity-30 tabular-nums [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+            />
+            {/* Avançar 4 compassos */}
+            <button onClick={() => { const cpb = subdivMode ? 8 : 4; const target = Math.min(beatsRef.current - 1, startBeat + cpb * 4); setStartBeat(target); setSelectedBeat(target); if (scrollRef.current) { scrollRef.current.scrollLeft = Math.max(0, target * 40 - scrollRef.current.clientWidth / 2); } }}
+              title="Avançar 4 compassos" disabled={isPlaying}
+              className="shrink-0 flex items-center gap-1 px-2 py-1.5 text-xs text-stone-400 bg-stone-900 border-y border-r border-stone-800 rounded-r-lg hover:border-stone-700 disabled:opacity-30 transition-colors">
+              <ChevronRight className="w-3.5 h-3.5" />
+            </button>
+
+            {/* Final (última nota tocada) */}
+            <button onClick={() => { let last = 0; for (let b = gridRef.current.length - 1; b >= 0; b--) { if (gridRef.current[b].some(c => c !== null)) { last = b; break; } } setStartBeat(last); setSelectedBeat(last); if (scrollRef.current) { scrollRef.current.scrollLeft = Math.max(0, last * 40 - scrollRef.current.clientWidth / 2); } }}
+              title="Ir ao final (última nota)" disabled={isPlaying}
+              className="shrink-0 flex items-center gap-1 px-2.5 py-1.5 text-xs text-stone-400 bg-stone-900 border border-stone-800 rounded-lg hover:border-stone-700 disabled:opacity-30 transition-colors">
+              Final
+              <SkipForward className="w-3.5 h-3.5" />
+            </button>
+
+            {/* Compassos */}
+            <div className="shrink-0 flex items-center rounded-lg overflow-hidden border border-stone-800">
+              <button onClick={() => removeBars(1)} disabled={isPlaying}
+                className="flex items-center justify-center w-7 h-8 text-stone-400 bg-stone-900 hover:bg-stone-800 disabled:opacity-30 transition-colors">
+                <Minus className="w-3 h-3" />
+              </button>
+              <span className="px-2 text-xs text-stone-500 bg-stone-900 select-none tabular-nums">
+                {subdivMode ? beats / 8 : beats / 4}c
+              </span>
+              <button onClick={() => addBars(1)} disabled={isPlaying}
+                className="flex items-center justify-center w-7 h-8 text-stone-400 bg-stone-900 hover:bg-stone-800 disabled:opacity-30 transition-colors">
+                <Plus className="w-3 h-3" />
               </button>
             </div>
 
-            <div className="h-5 w-px bg-stone-800" />
+            {/* Desfazer / Refazer */}
+            <div className="shrink-0 flex items-center rounded-lg overflow-hidden border border-stone-800">
+              <button onClick={undo} disabled={!canUndo || isPlaying} title="Desfazer (Ctrl+Z)"
+                className="flex items-center justify-center w-8 h-8 text-stone-400 bg-stone-900 hover:bg-stone-800 disabled:opacity-30 transition-colors">
+                <Undo2 className="w-3.5 h-3.5" />
+              </button>
+              <button onClick={redo} disabled={!canRedo || isPlaying} title="Refazer (Ctrl+Y)"
+                className="flex items-center justify-center w-8 h-8 text-stone-400 bg-stone-900 hover:bg-stone-800 disabled:opacity-30 transition-colors border-l border-stone-800">
+                <Redo2 className="w-3.5 h-3.5" />
+              </button>
+            </div>
 
-            {/* Beat visualizer — 4 dots */}
-            <div className="flex items-center gap-2">
-              {[0, 1, 2, 3].map((b) => {
-                const isActive = metroBeat === b && metronomeOn;
-                const isDown   = b === 0;
+            <div className="h-5 w-px bg-stone-800 shrink-0" />
+
+            {/* BPM */}
+            <div className="shrink-0 flex items-center gap-1">
+              <button onClick={() => { const v = Math.max(40, bpm - 1); setBpm(v); setBpmInput(String(v)); }}
+                className="w-6 h-6 rounded bg-stone-800 text-stone-400 hover:bg-stone-700 flex items-center justify-center font-bold text-sm leading-none">−</button>
+              <input type="text" inputMode="numeric" value={bpmInput}
+                onChange={(e) => setBpmInput(e.target.value.replace(/[^0-9]/g, ''))}
+                onBlur={() => { const v = Math.round(Math.min(200, Math.max(40, Number(bpmInput) || bpm))); setBpm(v); setBpmInput(String(v)); }}
+                onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
+                className="w-11 text-center text-sm font-mono font-bold text-stone-200 tabular-nums bg-transparent border-b border-stone-700 focus:border-stone-400 outline-none"
+              />
+              <button onClick={() => { const v = Math.min(200, bpm + 1); setBpm(v); setBpmInput(String(v)); }}
+                className="w-6 h-6 rounded bg-stone-800 text-stone-400 hover:bg-stone-700 flex items-center justify-center font-bold text-sm leading-none">+</button>
+              <span className="text-[10px] text-stone-600 ml-0.5">BPM</span>
+              <input type="range" min={40} max={200} value={bpm}
+                onChange={(e) => { const v = Number(e.target.value); setBpm(v); setBpmInput(String(v)); }}
+                className="w-20 accent-stone-400 cursor-pointer ml-1" />
+            </div>
+
+            <div className="h-5 w-px bg-stone-800 shrink-0" />
+
+            {/* Metrônomo */}
+            <div className="shrink-0 flex items-center gap-1.5">
+              <Timer className="w-3.5 h-3.5 text-stone-600 shrink-0" />
+              <button onClick={toggleMetronome}
+                className={`relative inline-flex h-4 w-8 shrink-0 cursor-pointer rounded-full border-2 transition-colors ${
+                  metronomeOn ? 'border-stone-400 bg-stone-400' : 'border-stone-700 bg-stone-800'
+                }`}>
+                <span className={`pointer-events-none inline-block h-3 w-3 rounded-full bg-stone-950 shadow transition-transform ${metronomeOn ? 'translate-x-4' : 'translate-x-0'}`} />
+              </button>
+              <div className="flex items-center gap-1">
+                {[0, 1, 2, 3].map((b) => {
+                  const active = metroBeat === b && metronomeOn;
+                  return <div key={b} className={`rounded-full transition-all duration-75 ${active ? (b === 0 ? 'bg-stone-100' : 'bg-stone-400') : (b === 0 ? 'bg-stone-700 border border-stone-600' : 'bg-stone-800')}`}
+                    style={{ width: b === 0 ? 12 : 9, height: b === 0 ? 12 : 9 }} />;
+                })}
+              </div>
+              <button onClick={handleTap}
+                className="px-2 py-1 text-[11px] font-medium text-stone-300 bg-stone-800 border border-stone-700 rounded-lg hover:bg-stone-700 active:scale-95 select-none transition-all">
+                Tap
+              </button>
+            </div>
+
+            {detectedBpm !== null && (
+              <div className="shrink-0 flex items-center gap-1 px-2 py-0.5 rounded-lg bg-emerald-950/40 border border-emerald-900/50">
+                <div className="w-1.5 h-1.5 rounded-full bg-emerald-400 shrink-0" />
+                <span className="text-[11px] text-emerald-400">BPM: <strong>{detectedBpm}</strong></span>
+              </div>
+            )}
+          </div>
+
+          {/* — Direita: utilitários — */}
+          <div className="flex items-center gap-1.5 shrink-0 ml-auto pl-2">
+            <button onClick={exportTab} title="Exportar"
+              className="flex items-center justify-center w-8 h-8 text-stone-400 bg-stone-900 border border-stone-800 rounded-lg hover:border-stone-700 transition-colors">
+              <Download className="w-3.5 h-3.5" />
+            </button>
+            <button onClick={() => importInputRef.current?.click()} title="Importar"
+              className="flex items-center justify-center w-8 h-8 text-stone-400 bg-stone-900 border border-stone-800 rounded-lg hover:border-stone-700 transition-colors">
+              <Upload className="w-3.5 h-3.5" />
+            </button>
+            <input ref={importInputRef} type="file" accept=".json" className="hidden"
+              onChange={(e) => { const f = e.target.files?.[0]; if (f) importTab(f); e.target.value = ''; }}
+            />
+            <button onClick={reset} title="Limpar"
+              className="flex items-center justify-center w-8 h-8 text-stone-400 bg-stone-900 border border-stone-800 rounded-lg hover:border-stone-700 transition-colors">
+              <Trash2 className="w-3.5 h-3.5" />
+            </button>
+            <div className="h-5 w-px bg-stone-800" />
+            <button onClick={() => setShowAudioPanel((v) => !v)} title="Transcrição de áudio por IA"
+              className={`flex items-center gap-1 px-2.5 py-1.5 text-[11px] rounded-lg border transition-colors ${
+                showAudioPanel ? 'bg-stone-200 text-stone-950 border-stone-300 font-semibold' : 'text-stone-400 bg-stone-900 border-stone-800 hover:border-stone-700'
+              }`}>
+              IA
+            </button>
+            {lastSaved && (
+              <span className="flex items-center gap-1 text-[10px] text-stone-600">
+                <Save className="w-3 h-3" />
+                {lastSaved.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}
+              </span>
+            )}
+            {!isLoaded ? (
+              <div className="flex items-center gap-1 text-[11px] text-stone-500 bg-stone-900 border border-stone-800 px-2 py-1.5 rounded-lg">
+                <Loader2 className="w-3 h-3 animate-spin shrink-0" />
+              </div>
+            ) : (
+              <div className="w-2 h-2 rounded-full bg-emerald-400" title="Pronto para tocar" />
+            )}
+          </div>
+
+        </div>
+      </div>
+
+      {/* ═══ Braço do violão ═══ */}
+      <div className="shrink-0 flex items-center gap-3 px-4 py-1.5 border-b border-stone-800 bg-stone-900/20 overflow-x-auto" style={{ scrollbarWidth: 'none' }}>
+        {/* Frete selecionado */}
+        <span className={`shrink-0 inline-flex items-center justify-center w-8 h-8 rounded-lg font-mono text-sm font-bold border ${
+          capo > 0 && selectedFret > 0 && selectedFret < capo
+            ? 'bg-red-900/60 text-red-400 border-red-800'
+            : 'bg-stone-200 text-stone-950 border-stone-300'
+        }`} title={capo > 0 && selectedFret > 0 && selectedFret < capo ? 'Abaixo do capo — não soa' : `Frete ${selectedFret}`}>
+          {selectedFret}
+        </span>
+
+        {/* Braço */}
+        <GuitarNeck selectedFret={selectedFret} capo={capo} onFretClick={setSelectedFret} />
+
+        <div className="h-5 w-px bg-stone-800 shrink-0" />
+
+        {/* Capo */}
+        <div className="shrink-0 flex items-center gap-1">
+          <span className="text-[10px] text-stone-500 mr-0.5 shrink-0">Capo:</span>
+          {Array.from({ length: 8 }, (_, i) => (
+            <button key={i} onClick={() => setCapo(i)}
+              className={`w-6 h-6 rounded font-mono text-[11px] transition-colors ${
+                capo === i ? 'bg-amber-400 text-stone-950 font-bold' : 'bg-stone-800/80 text-stone-400 hover:bg-stone-700'
+              }`}>{i === 0 ? '—' : i}</button>
+          ))}
+        </div>
+      </div>
+
+      {/* ═══ Técnicas ═══ */}
+      <div className="shrink-0 flex items-center gap-1.5 px-4 py-1.5 border-b border-stone-800 bg-stone-900/10 overflow-x-auto" style={{ scrollbarWidth: 'none' }}>
+        <span className="text-[10px] text-stone-600 shrink-0 mr-0.5">Técnica:</span>
+        {(
+          [
+            { value: null,         label: 'Normal',   short: '●', color: 'text-stone-400' },
+            { value: 'slide-up',   label: 'Slide ↑',  short: '/', color: 'text-amber-400' },
+            { value: 'slide-down', label: 'Slide ↓',  short: '\\', color: 'text-amber-400' },
+            { value: 'hammer',     label: 'Hammer-on', short: 'h', color: 'text-blue-400'  },
+            { value: 'pull',       label: 'Pull-off',  short: 'p', color: 'text-purple-400'},
+            { value: 'arpeggio',   label: 'Arpejo',    short: '⫰', color: 'text-emerald-400'},
+            { value: 'mute',       label: 'Abafar',    short: 'x', color: 'text-red-400'},
+          ] as Array<{ value: Technique | null; label: string; short: string; color: string }>
+        ).map((t) => (
+          <button key={String(t.value ?? 'normal')} onClick={() => setSelectedTech(t.value)}
+            className={`shrink-0 flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] transition-colors ${
+              selectedTech === t.value ? 'bg-stone-200 text-stone-950 font-semibold' : 'bg-stone-800 text-stone-400 hover:bg-stone-700'
+            }`}>
+            <span className={`font-mono font-bold ${selectedTech === t.value ? 'text-stone-950' : t.color}`}>{t.short}</span>
+            <span>{t.label}</span>
+          </button>
+        ))}
+        {(selectedTech === 'slide-up' || selectedTech === 'slide-down') && (
+          <>
+            <span className="text-[10px] text-stone-500 ml-1 shrink-0">→ frete:</span>
+            <input type="number" min={0} max={MAX_FRET} value={slideToValue}
+              onChange={(e) => setSlideToValue(Math.max(0, Math.min(MAX_FRET, Number(e.target.value))))}
+              onMouseDown={(e) => e.stopPropagation()}
+              className="w-12 px-1.5 py-1 rounded-lg text-[11px] bg-stone-800 border border-amber-700/50 text-amber-300 font-mono outline-none focus:border-amber-500 shrink-0"
+            />
+          </>
+        )}
+        {selectedTech === 'mute' && (
+          <>
+            <span className="text-[10px] text-stone-500 ml-1 shrink-0">casas até abafar:</span>
+            <input type="number" min={1} max={32} value={muteAfterValue}
+              onChange={(e) => setMuteAfterValue(Math.max(1, Math.min(32, Number(e.target.value))))}
+              onMouseDown={(e) => e.stopPropagation()}
+              className="w-12 px-1.5 py-1 rounded-lg text-[11px] bg-stone-800 border border-red-700/50 text-red-300 font-mono outline-none focus:border-red-500 shrink-0"
+            />
+          </>
+        )}
+
+        <div className="h-4 w-px bg-stone-800 mx-1 shrink-0" />
+
+        {/* Subdivisão */}
+        <button onClick={toggleSubdiv} title="Ativa células 1/16"
+          className={`shrink-0 flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] transition-colors ${
+            subdivMode ? 'bg-stone-200 text-stone-950 font-semibold' : 'bg-stone-800 text-stone-400 hover:bg-stone-700'
+          }`}>
+          <span className={`font-mono font-bold text-[10px] ${subdivMode ? 'text-stone-950' : 'text-stone-500'}`}>1/16</span>
+          <span>Subdivisão</span>
+        </button>
+
+        {/* Estrutura */}
+        <button onClick={() => setStructureMode((v) => !v)} disabled={isPlaying} title="Modo estrutura"
+          className={`shrink-0 flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] transition-colors disabled:opacity-40 ${
+            structureMode ? 'bg-amber-400 text-stone-950 font-semibold' : 'bg-stone-800 text-stone-400 hover:bg-stone-700'
+          }`}>
+          <Columns2 className="w-3 h-3" />
+          <span>Estrutura</span>
+        </button>
+
+        {/* Status do compasso */}
+        <span className="ml-auto shrink-0 text-[10px] text-stone-600 font-mono">
+          {(() => {
+            const cpb = subdivMode ? 8 : 4;
+            const bar = currentBeat !== null ? Math.floor(currentBeat / cpb) + 1 : null;
+            const total = Math.ceil(beats / cpb);
+            return bar !== null ? `Compasso ${bar} / ${total}` : `${total} compassos`;
+          })()}
+        </span>
+      </div>
+
+      {/* ─── Painel de Áudio colapsável ─── */}
+      {showAudioPanel && (
+        <div className="shrink-0 px-4 py-2.5 border-b border-stone-800 bg-stone-900/20">
+          <div className="flex flex-wrap items-center gap-3">
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="text-xs text-stone-500">Tom:</span>
+              <div className="flex gap-1 flex-wrap">
+                {Object.keys(KEY_ROOTS).map((k) => (
+                  <button key={k} onClick={() => setKeyRoot(k)}
+                    className={`px-2 py-1 rounded text-xs font-mono transition-colors ${
+                      keyRoot === k ? 'bg-stone-200 text-stone-950 font-bold' : 'bg-stone-800 text-stone-400 hover:bg-stone-700'
+                    }`}>{k}</button>
+                ))}
+              </div>
+              <div className="flex rounded overflow-hidden border border-stone-700">
+                {(['major', 'minor'] as const).map((m) => (
+                  <button key={m} onClick={() => setKeyMode(m)}
+                    className={`px-2.5 py-1 text-xs transition-colors ${
+                      keyMode === m ? 'bg-stone-400 text-stone-950 font-semibold' : 'bg-stone-800 text-stone-400 hover:bg-stone-700'
+                    }`}>{m === 'major' ? 'Maior' : 'Menor'}</button>
+                ))}
+              </div>
+              <span className="text-xs text-stone-600 font-medium">
+                {keyRoot} {keyMode === 'major' ? 'Maior' : 'Menor'}{capo > 0 ? ` · capo ${capo}` : ''}
+              </span>
+            </div>
+            <div className="w-full border-t border-stone-800/60" />
+            <input ref={fileInputRef} type="file" accept="audio/*" className="hidden"
+              onChange={(e) => { const f = e.target.files?.[0] ?? null; setAudioFile(f); setTranscribeStatus(''); }}
+            />
+            <button onClick={() => fileInputRef.current?.click()} disabled={transcribing}
+              className="flex items-center gap-2 px-3 py-1.5 text-xs text-stone-300 bg-stone-800 border border-stone-700 rounded-lg hover:bg-stone-700 disabled:opacity-40 transition-colors">
+              Escolher arquivo
+            </button>
+            {audioFile && <span className="text-xs text-stone-400 truncate max-w-[180px]">{audioFile.name}</span>}
+            <button onClick={handleTranscribe} disabled={!audioFile || transcribing}
+              className="flex items-center gap-2 px-4 py-1.5 text-xs font-semibold text-stone-950 bg-stone-200 rounded-lg hover:bg-white disabled:opacity-40 disabled:cursor-not-allowed transition-colors">
+              {transcribing ? <><Loader2 className="w-3 h-3 animate-spin" />Analisando…</> : 'Transcrever'}
+            </button>
+            {transcribing && (
+              <div className="w-full">
+                <div className="h-1.5 bg-stone-800 rounded-full overflow-hidden">
+                  <div className="h-full bg-stone-400 rounded-full transition-all duration-300" style={{ width: transcribeProgress + '%' }} />
+                </div>
+                <p className="mt-1 text-xs text-stone-500">{transcribeStatus}</p>
+              </div>
+            )}
+            {!transcribing && transcribeStatus && (
+              <p className={`text-xs ${transcribeStatus.startsWith('⚠') ? 'text-red-400' : 'text-emerald-400'}`}>{transcribeStatus}</p>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ─── Grade TAB — ocupa todo o espaço restante ─── */}
+      <div className="shrink-0 flex flex-col overflow-hidden px-3 pt-2 pb-1" style={{ height: 'calc(100vh - 260px)', minHeight: 220 }}>
+
+        {/* Strip rolável */}
+        <div
+          ref={scrollRef}
+          className={`flex-1 min-h-0 overflow-x-hidden overflow-y-auto select-none ${structureMode ? 'cursor-default' : 'cursor-grab active:cursor-grabbing'}`}
+          style={{ scrollbarWidth: 'none' }}
+          onMouseDown={(e) => { if (!structureMode) onDragStart(e.clientX); }}
+          onMouseMove={(e) => { if (!structureMode && e.buttons === 1) onDragMove(e.clientX); }}
+          onMouseUp={onDragEnd}
+          onMouseLeave={onDragEnd}
+          onTouchStart={(e) => { if (!structureMode) onDragStart(e.touches[0].clientX); }}
+          onTouchMove={(e) => { if (!structureMode) onDragMove(e.touches[0].clientX); }}
+          onTouchEnd={onDragEnd}
+        >
+          {(() => {
+            const colsPerBar = subdivMode ? 8 : 4;
+            return (
+          <div style={{ width: beats * 40 + 40 }}>
+
+            {/* Linha de acordes — um campo por beat */}
+            <div className="flex mb-0.5">
+              <div className="w-10 shrink-0 flex items-center justify-end pr-2">
+                <span className="text-[10px] text-stone-600 select-none" title="Acorde">♭</span>
+              </div>
+              {Array.from({ length: beats }, (_, b) => {
+                const isBarStart = b % colsPerBar === 0;
+                const chord = chords[b];
                 return (
-                  <div
-                    key={b}
-                    className={`rounded-full transition-all duration-75 ${
-                      isActive
-                        ? isDown
-                          ? 'bg-stone-100 shadow-[0_0_8px_2px_rgba(255,255,255,0.3)]'
-                          : 'bg-stone-400'
-                        : isDown
-                        ? 'bg-stone-700 border border-stone-600'
-                        : 'bg-stone-800'
-                    }`}
-                    style={{
-                      width:  isDown ? 18 : 14,
-                      height: isDown ? 18 : 14,
-                    }}
-                  />
+                  <div key={b} className={`w-10 shrink-0 relative ${isBarStart ? 'border-l border-stone-800/30' : ''}`}>
+                    <input
+                      value={chord?.name ?? ''}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        setChords((prev) =>
+                          val
+                            ? { ...prev, [b]: { ...(prev[b] ?? {}), name: val } }
+                            : Object.fromEntries(Object.entries(prev).filter(([k]) => Number(k) !== b))
+                        );
+                      }}
+                      onMouseDown={(e) => e.stopPropagation()}
+                      onTouchStart={(e) => e.stopPropagation()}
+                      placeholder=""
+                      title={`Beat ${b + 1} — acorde`}
+                      className={`w-full text-[11px] bg-transparent border-none outline-none font-bold py-0.5 px-0.5 truncate focus:overflow-visible focus:relative focus:z-20 transition-colors ${
+                        chord?.name
+                          ? 'text-amber-400 placeholder:text-stone-800'
+                          : 'text-stone-800 placeholder:text-stone-900 focus:text-amber-300'
+                      }`}
+                    />
+                  </div>
                 );
               })}
             </div>
 
-            <div className="h-5 w-px bg-stone-800" />
-
-            {/* BPM counter */}
-            <div className="flex items-center gap-2">
-              <button
-                onClick={() => setBpm((v) => Math.max(40, v - 1))}
-                className="w-6 h-6 rounded bg-stone-800 text-stone-400 hover:bg-stone-700 flex items-center justify-center text-sm font-bold leading-none"
-              >−</button>
-              <span className="w-10 text-center text-lg font-mono font-bold text-stone-200 tabular-nums">
-                {bpm}
-              </span>
-              <button
-                onClick={() => setBpm((v) => Math.min(200, v + 1))}
-                className="w-6 h-6 rounded bg-stone-800 text-stone-400 hover:bg-stone-700 flex items-center justify-center text-sm font-bold leading-none"
-              >+</button>
-              <span className="text-xs text-stone-600 ml-1">BPM</span>
-            </div>
-
-            {/* Slider */}
-            <input
-              type="range"
-              min={40}
-              max={200}
-              value={bpm}
-              onChange={(e) => setBpm(Number(e.target.value))}
-              className="w-28 accent-stone-400 cursor-pointer"
-            />
-
-            <div className="h-5 w-px bg-stone-800" />
-
-            {/* Tap tempo */}
-            <button
-              onClick={handleTap}
-              className="px-3 py-1.5 text-xs font-medium text-stone-300 bg-stone-800 border border-stone-700 rounded-lg hover:bg-stone-700 active:scale-95 transition-all select-none"
-            >
-              Tap Tempo
-            </button>
-
-            {/* Detected BPM badge */}
-            {detectedBpm !== null && (
-              <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-emerald-950/40 border border-emerald-900/50">
-                <div className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
-                <span className="text-xs text-emerald-400">BPM detectado do áudio: <strong>{detectedBpm}</strong></span>
+            {/* Cabeçalho de beats */}
+            <div className="flex mb-1">
+              <div className="w-10 shrink-0 relative">
+                {structureMode && (
+                  <button onMouseDown={(e) => e.stopPropagation()} onClick={(e) => { e.stopPropagation(); insertBeat(0); }}
+                    title="Inserir beat antes do 1º"
+                    className="absolute right-0 top-1/2 -translate-y-1/2 z-30 w-5 h-5 flex items-center justify-center rounded-full bg-emerald-900 border border-emerald-700 text-emerald-300 hover:bg-emerald-700 transition-all text-[10px] leading-none">+</button>
+                )}
               </div>
-            )}
-          </div>
-        </div>
-
-        {/* Guitar neck fret selector */}
-        <div className="mb-4 p-4 bg-stone-900/40 border border-stone-800 rounded-xl">
-          <div className="flex items-center justify-between mb-3">
-            <span className="text-xs text-stone-500">① Selecione o frete no braço</span>
-            <div className="flex items-center gap-2">
-              <span className="text-xs text-stone-600">Frete selecionado:</span>
-              <span className={`inline-flex items-center justify-center w-7 h-7 rounded font-mono text-sm font-bold ${
-                capo > 0 && selectedFret > 0 && selectedFret < capo
-                  ? 'bg-red-900/60 text-red-400 border border-red-800'
-                  : 'bg-stone-200 text-stone-950'
-              }`}>
-                {selectedFret}
-              </span>
-              {capo > 0 && selectedFret > 0 && selectedFret < capo && (
-                <span className="text-xs text-red-400">abaixo do capo — não soa</span>
-              )}
-              {capo > 0 && (selectedFret === 0 || selectedFret >= capo) && (
-                <span className="text-xs text-stone-600">
-                  {selectedFret === 0 ? 'corda solta' : `casa ${selectedFret}`}
-                </span>
-              )}
-            </div>
-          </div>
-          <GuitarNeck
-            selectedFret={selectedFret}
-            capo={capo}
-            onFretClick={setSelectedFret}
-          />
-        </div>
-
-        {/* Technique + subdivision selector */}
-        <div className="mb-3 px-3 py-2 rounded-lg bg-stone-900/40 border border-stone-800">
-          <div className="flex items-center gap-2 flex-wrap">
-            <span className="text-xs text-stone-500">Técnica:</span>
-            {(
-              [
-                { value: null,          label: 'Normal',    short: '●', color: 'text-stone-400' },
-                { value: 'slide-up',    label: 'Slide ↑',   short: '/', color: 'text-amber-400' },
-                { value: 'slide-down',  label: 'Slide ↓',   short: '\\', color: 'text-amber-400' },
-                { value: 'hammer',      label: 'Hammer-on', short: 'h', color: 'text-blue-400'  },
-                { value: 'pull',        label: 'Pull-off',  short: 'p', color: 'text-purple-400'},
-              ] as Array<{ value: Technique | null; label: string; short: string; color: string }>
-            ).map((t) => (
-              <button
-                key={String(t.value ?? 'normal')}
-                onClick={() => setSelectedTech(t.value)}
-                className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs transition-colors ${
-                  selectedTech === t.value
-                    ? 'bg-stone-200 text-stone-950 font-semibold'
-                    : 'bg-stone-800 text-stone-400 hover:bg-stone-700'
-                }`}
-              >
-                <span className={`font-mono font-bold ${
-                  selectedTech === t.value ? 'text-stone-950' : t.color
-                }`}>{t.short}</span>
-                <span>{t.label}</span>
-              </button>
-            ))}
-
-            <div className="h-4 w-px bg-stone-800 mx-1" />
-
-            {/* Subdivision toggle */}
-            <button
-              onClick={toggleSubdiv}
-              title="Ativa células de semicolcheia (1/16) entre cada tempo — para notas de passagem, ornamentos e contratempos"
-              className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs transition-colors ${
-                subdivMode
-                  ? 'bg-stone-200 text-stone-950 font-semibold'
-                  : 'bg-stone-800 text-stone-400 hover:bg-stone-700'
-              }`}
-            >
-              <span className={`font-mono font-bold text-[10px] ${subdivMode ? 'text-stone-950' : 'text-stone-500'}`}>1/16</span>
-              <span>Subdivisão</span>
-            </button>
-          </div>
-          {subdivMode && (
-            <p className="mt-1.5 text-[11px] text-stone-600">
-              Células menores <span className="text-stone-500">(entre os tempos)</span> são as notas de passagem — semicolcheias.
-              Perfeitas para ornamentos, ghost notes e contratempos do fingerstyle.
-            </p>
-          )}
-        </div>
-
-        {/* Step 2 hint */}
-        <div className="mb-3 flex items-start gap-2 px-3 py-2 rounded-lg bg-stone-900/40 border border-stone-800">
-          <span className="text-xs text-stone-500 leading-relaxed">
-            <strong className="text-stone-400">② Clique nas células da grade</strong> para colocar o frete {selectedFret} na corda e batida desejadas.
-            Para um <strong className="text-stone-400">acorde ou pinçada</strong> (várias cordas juntas), clique em múltiplas células <em>da mesma coluna</em> (mesmo número de batida).
-            Clique novamente para remover.
-          </span>
-        </div>
-
-        {/* Tablature grid */}
-        <div className="rounded-xl border border-stone-800 bg-stone-950 p-4">
-
-          {/* Top bar: capo info + compass counter */}
-          <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
-            {capo > 0 ? (
-              <div className="flex items-center gap-1.5 px-3 py-1 rounded-lg bg-amber-500/10 border border-amber-500/30">
-                <div className="w-1.5 h-1.5 rounded-full bg-amber-400" />
-                <span className="text-xs text-amber-400 font-medium">Capotraste no frete {capo}</span>
-              </div>
-            ) : <div />}
-            <span className="text-xs text-stone-600 font-mono">
-              {(() => {
-                const cpb = subdivMode ? 8 : 4;
-                const bar = currentBeat !== null ? Math.floor(currentBeat / cpb) + 1 : null;
-                const total = Math.ceil(beats / cpb);
-                return bar !== null
-                  ? `Compasso ${bar} / ${total}${subdivMode ? ' · 1/16' : ''}`
-                  : `${total} compassos · arraste para navegar${subdivMode ? ' · modo 1/16' : ''}`;
-              })()}
-            </span>
-          </div>
-
-          {/* Scrollable continuous strip */}
-          <div
-            ref={scrollRef}
-            className="overflow-x-hidden cursor-grab active:cursor-grabbing select-none"
-            style={{ scrollbarWidth: 'none' }}
-            onMouseDown={(e) => onDragStart(e.clientX)}
-            onMouseMove={(e) => { if (e.buttons === 1) onDragMove(e.clientX); }}
-            onMouseUp={onDragEnd}
-            onMouseLeave={onDragEnd}
-            onTouchStart={(e) => onDragStart(e.touches[0].clientX)}
-            onTouchMove={(e) => onDragMove(e.touches[0].clientX)}
-            onTouchEnd={onDragEnd}
-          >
-            {/* colsPerBar: 8 cols in 16th mode, 4 cols in 8th mode */}
-            {(() => {
-              const colsPerBar = subdivMode ? 8 : 4;
-              return (
-            <div style={{ width: beats * 40 + 40 }}>
-              {/* Beat header */}
-              <div className="flex mb-1">
-                <div className="w-10 shrink-0" />
-                {Array.from({ length: beats }, (_, b) => {
-                  const isBarStart  = b % colsPerBar === 0;
-                  const isMainBeat  = !subdivMode || b % 2 === 0;
-                  const isSubBeat   = subdivMode && b % 2 === 1;
-                  return (
-                    <div
-                      key={b}
-                      className={`w-10 shrink-0 text-center text-xs font-mono transition-colors ${
-                        currentBeat === b
-                          ? 'text-stone-200 font-bold'
-                          : isBarStart
-                          ? 'text-stone-500'
-                          : isSubBeat
-                          ? 'text-stone-800'
-                          : 'text-stone-700'
-                      }`}
-                    >
-                      {isBarStart
-                        ? b / colsPerBar + 1
-                        : isSubBeat
-                        ? <span className="text-[9px] text-stone-800">+</span>
-                        : '·'}
-                    </div>
-                  );
-                })}
-              </div>
-
-              {/* String rows — full length */}
-              {Array.from({ length: STRING_COUNT }, (_, s) => (
-                <div key={s} className="flex items-center">
-                  <div className="w-10 shrink-0 text-right pr-3 font-mono text-sm font-semibold text-stone-500 select-none">
-                    {STRING_LABELS[s]}
+              {Array.from({ length: beats }, (_, b) => {
+                const isBarStart = b % colsPerBar === 0;
+                const isSubBeat  = subdivMode && b % 2 === 1;
+                const isStart    = b === startBeat;
+                const isSelected = b === selectedBeat;
+                return (
+                  <div key={b}
+                    onClick={() => { if (!isPlaying && !structureMode) setStartBeat(b); }}
+                    title={isPlaying || structureMode ? undefined : `Iniciar daqui (beat ${b + 1})`}
+                    className={`w-10 shrink-0 relative text-center text-xs font-mono transition-colors ${
+                      structureMode ? '' : isPlaying ? '' : 'cursor-pointer hover:text-stone-300'
+                    } ${
+                      currentBeat === b ? 'text-stone-200 font-bold'
+                      : isBarStart ? 'text-stone-500'
+                      : isSubBeat ? 'text-stone-800'
+                      : 'text-stone-700'
+                    } ${isSelected && !structureMode ? 'bg-sky-900/30 rounded' : ''}`}
+                  >
+                    {structureMode ? (
+                      <>
+                        <button onMouseDown={(e) => e.stopPropagation()} onClick={(e) => { e.stopPropagation(); deleteBeat(b); }}
+                          title={`Remover beat ${b + 1}`}
+                          className="w-full h-full flex items-center justify-center text-red-400 hover:text-red-200 hover:bg-red-900/30 rounded transition-colors">
+                          <X className="w-3 h-3" />
+                        </button>
+                        <button onMouseDown={(e) => e.stopPropagation()} onClick={(e) => { e.stopPropagation(); insertBeat(b + 1); }}
+                          title={`Inserir beat após ${b + 1}`}
+                          className="absolute -right-2.5 top-1/2 -translate-y-1/2 z-30 w-5 h-5 flex items-center justify-center rounded-full bg-emerald-900 border border-emerald-700 text-emerald-300 hover:bg-emerald-700 transition-all text-[10px] leading-none">+</button>
+                      </>
+                    ) : (
+                      <>
+                        {isStart && (
+                          <span className="absolute top-0 left-1/2 -translate-x-1/2 flex flex-col items-center pointer-events-none">
+                            <span className="w-0 h-0 border-l-[4px] border-l-transparent border-r-[4px] border-r-transparent border-t-[5px] border-t-emerald-400" />
+                            <span className="w-0.5 h-2.5 bg-emerald-400/70 rounded-full" />
+                          </span>
+                        )}
+                        {isSelected && !isStart && (
+                          <span className="absolute top-0 left-1/2 -translate-x-1/2 flex flex-col items-center pointer-events-none">
+                            <span className="w-0 h-0 border-l-[4px] border-l-transparent border-r-[4px] border-r-transparent border-t-[5px] border-t-sky-400" />
+                            <span className="w-0.5 h-2.5 bg-sky-400/60 rounded-full" />
+                          </span>
+                        )}
+                        {isBarStart ? b / colsPerBar + 1 : isSubBeat ? <span className="text-[9px] text-stone-800">+</span> : '·'}
+                      </>
+                    )}
                   </div>
+                );
+              })}
+            </div>
 
-                  {/* Cells — full continuous strip */}
-                  {Array.from({ length: beats }, (_, b) => {
-                    const cell = grid[b]?.[s] ?? null;
-                    const isActive = currentBeat === b;
-                    const hasNote = cell !== null;
-                    const fret = cell?.fret ?? null;
-                    const tech = cell?.tech;
-                    const colsPerBar = subdivMode ? 8 : 4;
-                    const isMeasureStart = b % colsPerBar === 0;
-                    const isSubBeat = subdivMode && b % 2 === 1;
-                    const belowCapo = hasNote && capo > 0 && fret! > 0 && fret! < capo;
-
-                    return (
-                      <button
-                        key={b}
-                        onClick={() => toggleCell(b, s)}
-                        onMouseEnter={() => setHoveredCell({ b, s })}
-                        onMouseLeave={() => setHoveredCell(null)}
-                        className={`w-10 shrink-0 relative flex items-center justify-center transition-colors select-none
-                          ${isSubBeat ? 'h-7' : 'h-10'}
-                          ${isMeasureStart ? 'border-l-2 border-stone-700' : isSubBeat ? 'border-l border-stone-800/20' : 'border-l border-stone-800/40'}
-                          ${isActive ? 'bg-stone-800/70' : isSubBeat ? 'bg-stone-950/60 hover:bg-stone-900/60' : 'hover:bg-stone-800/40'}
-                        `}
-                      >
-                        {/* Sub-beat marker line */}
-                        {isSubBeat && !hasNote && (
-                          <div className="absolute inset-x-0 top-1/2 -translate-y-1/2 h-px border-t border-dashed border-stone-800/60 pointer-events-none" />
-                        )}
-                        {!isSubBeat && (
-                          <div className={`absolute left-0 right-0 h-px pointer-events-none ${
-                            isActive ? 'bg-stone-500' : 'bg-stone-700/60'
-                          }`} />
-                        )}
-                        {!hasNote && hoveredCell?.b === b && hoveredCell?.s === s && (
-                          <span className={`relative z-10 font-mono font-bold px-1 py-0.5 rounded-sm leading-none bg-stone-800 text-stone-500 opacity-70 ${
-                            isSubBeat ? 'text-[10px]' : 'text-xs'
-                          }`}>
-                            {selectedFret}
-                          </span>
-                        )}
-                        {hasNote && (
-                          <span className={`relative z-10 font-mono font-bold px-1 py-0.5 rounded-sm leading-none ${
-                            isSubBeat ? 'text-[10px]' : 'text-xs'
-                          } ${
-                            belowCapo
-                              ? 'bg-red-900/70 text-red-400 line-through'
-                              : isSubBeat && !tech
-                              ? 'bg-stone-700 text-stone-300'
-                              : tech === 'hammer'
-                              ? 'bg-blue-200 text-stone-950'
-                              : tech === 'pull'
-                              ? 'bg-purple-200 text-stone-950'
-                              : tech === 'slide-up' || tech === 'slide-down'
-                              ? 'bg-amber-200 text-stone-950'
-                              : isActive
-                              ? 'bg-stone-300 text-stone-950'
-                              : 'bg-stone-200 text-stone-950'
-                          }`}>
-                            {tech === 'slide-up' ? '/' : tech === 'slide-down' ? '\\' : tech === 'hammer' ? 'h' : tech === 'pull' ? 'p' : ''}{fret}
-                          </span>
-                        )}
-                      </button>
-                    );
-                  })}
-                </div>
-              ))}
-
-              {/* ── Lyrics row — uma sílaba por coluna, alinhada ao beat ── */}
-              <div className="flex items-stretch mt-1 pt-1 border-t border-stone-800/40">
-                <div className="w-10 shrink-0 flex items-center justify-end pr-2">
-                  <span className="text-[10px] text-stone-600 select-none" title="Letra">♩</span>
+            {/* Linhas de cordas */}
+            {Array.from({ length: STRING_COUNT }, (_, s) => (
+              <div key={s} className="flex items-center">
+                <div className="w-10 shrink-0 text-right pr-3 font-mono text-sm font-semibold text-stone-500 select-none">
+                  {STRING_LABELS[s]}
                 </div>
                 {Array.from({ length: beats }, (_, b) => {
-                  const colsPerBar = subdivMode ? 8 : 4;
-                  const isMeasureStart = b % colsPerBar === 0;
-                  const isActive = currentBeat === b;
-                  const syllable = lyrics[b] ?? '';
+                  const cell = grid[b]?.[s] ?? null;
+                  const isActive    = currentBeat === b;
+                  const isStartBeat = b === startBeat && !isPlaying;
+                  const hasNote     = cell !== null;
+                  const fret        = cell?.fret ?? null;
+                  const tech        = cell?.tech;
+                  const cpb         = subdivMode ? 8 : 4;
+                  const isMeasureStart = b % cpb === 0;
+                  const isSubBeat   = subdivMode && b % 2 === 1;
+                  const belowCapo   = hasNote && capo > 0 && fret! > 0 && fret! < capo;
+                  const isSelected  = selectedBeat === b && selectedString === s;
+                  const isInSel     = isInSelection(b);
+
                   return (
-                    <div
-                      key={b}
-                      className={`w-10 shrink-0 relative flex items-center overflow-visible
-                        ${isMeasureStart ? 'border-l border-stone-800/40' : ''}
-                        ${isActive && syllable ? 'bg-amber-500/10' : ''}
+                    <button key={b}
+                      onClick={(e) => {
+                        if (e.shiftKey && selectedBeat !== null) {
+                          // Shift+click — extend selection from current position
+                          setSelAnchor((prev) => prev ?? selectedBeat);
+                          setSelectedBeat(b);
+                          setSelectedString(s);
+                          return;
+                        }
+                        setSelAnchor(null);
+                        setSelectedBeat(b);
+                        setSelectedString(s);
+                        setFretInputBuffer('');
+                        if (!structureMode) toggleCell(b, s);
+                      }}
+                      onMouseEnter={() => { if (!structureMode) setHoveredCell({ b, s }); }}
+                      onMouseLeave={() => setHoveredCell(null)}
+                      className={`w-10 shrink-0 relative flex items-center justify-center transition-colors select-none
+                        ${isSubBeat ? 'h-7' : 'h-10'}
+                        ${isMeasureStart ? 'border-l-2 border-stone-700' : isSubBeat ? 'border-l border-stone-800/20' : 'border-l border-stone-800/40'}
+                        ${structureMode ? (b % 2 === 0 ? 'bg-stone-900/30' : '') : isActive ? 'bg-stone-800/70' : isSubBeat ? 'bg-stone-950/60 hover:bg-stone-900/60' : 'hover:bg-stone-800/40'}
                       `}
                     >
-                      <input
-                        value={syllable}
-                        onChange={(e) =>
-                          setLyrics((prev) => ({ ...prev, [b]: e.target.value }))
-                        }
-                        onMouseDown={(e) => e.stopPropagation()}
-                        onTouchStart={(e) => e.stopPropagation()}
-                        placeholder=""
-                        title={`Beat ${b + 1} — clique para digitar a sílaba cantada aqui`}
-                        className={`w-full text-[11px] bg-transparent border-none outline-none font-serif italic leading-none py-1 px-0.5 truncate focus:overflow-visible focus:z-10 focus:relative transition-colors ${
-                          isActive && syllable
-                            ? 'text-amber-300 font-semibold'
-                            : syllable
-                            ? 'text-stone-400'
-                            : 'text-stone-800 placeholder:text-stone-900'
-                        }`}
-                      />
-                      {/* Active beat underline */}
-                      {isActive && syllable && (
-                        <span className="absolute bottom-0 left-0 right-0 h-px bg-amber-500/50 pointer-events-none" />
+                      {isSelected && <span className="absolute inset-0 ring-2 ring-amber-400/70 rounded-sm pointer-events-none z-30" />}
+                      {isInSel && !isSelected && <span className="absolute inset-0 bg-sky-500/20 pointer-events-none z-20" />}
+                      {isStartBeat && <span className="absolute inset-y-0 left-0 w-0.5 bg-emerald-400/60 pointer-events-none z-20" />}
+                      {isSubBeat && !hasNote && <div className="absolute inset-x-0 top-1/2 -translate-y-1/2 h-px border-t border-dashed border-stone-800/60 pointer-events-none" />}
+                      {!isSubBeat && <div className={`absolute left-0 right-0 h-px pointer-events-none ${isActive ? 'bg-stone-500' : 'bg-stone-700/60'}`} />}
+                      {!hasNote && hoveredCell?.b === b && hoveredCell?.s === s && (
+                        <span className={`relative z-10 font-mono font-bold px-1 py-0.5 rounded-sm leading-none bg-stone-800 text-stone-500 opacity-70 ${isSubBeat ? 'text-[10px]' : 'text-xs'}`}>
+                          {selectedFret}
+                        </span>
                       )}
-                    </div>
+                      {hasNote && (
+                        <span className={`relative z-10 font-mono font-bold px-1 py-0.5 rounded-sm leading-none ${isSubBeat ? 'text-[10px]' : 'text-xs'} ${
+                          belowCapo ? 'bg-red-900/70 text-red-400 line-through'
+                          : isSubBeat && !tech ? 'bg-stone-700 text-stone-300'
+                          : tech === 'hammer' ? 'bg-blue-200 text-stone-950'
+                          : tech === 'pull'   ? 'bg-purple-200 text-stone-950'
+                          : tech === 'slide-up' || tech === 'slide-down' ? 'bg-amber-200 text-stone-950'
+                          : tech === 'arpeggio' ? 'bg-emerald-200 text-stone-950'
+                          : tech === 'mute' ? 'bg-red-200 text-stone-950'
+                          : isActive ? 'bg-stone-300 text-stone-950'
+                          : 'bg-stone-200 text-stone-950'
+                        }`}>
+                          {tech === 'slide-up' ? '/' : tech === 'slide-down' ? '\\' : tech === 'hammer' ? 'h' : tech === 'pull' ? 'p' : tech === 'arpeggio' ? '⫰' : ''}{fret}{tech === 'mute' ? <span className="text-[8px] text-red-400">x{cell?.muteAfter}</span> : ''}
+                        </span>
+                      )}
+                    </button>
                   );
                 })}
               </div>
+            ))}
+
+            {/* Linha de letras */}
+            <div className="flex items-stretch mt-1 pt-1 border-t border-stone-800/40">
+              <div className="w-10 shrink-0 flex items-center justify-end pr-2">
+                <span className="text-[10px] text-stone-600 select-none" title="Letra">♩</span>
+              </div>
+              {Array.from({ length: beats }, (_, b) => {
+                const cpb = subdivMode ? 8 : 4;
+                const isMeasureStart = b % cpb === 0;
+                const isActive = currentBeat === b;
+                const syllable = lyrics[b] ?? '';
+                return (
+                  <div key={b} className={`w-10 shrink-0 relative flex items-center overflow-visible ${isMeasureStart ? 'border-l border-stone-800/40' : ''} ${isActive && syllable ? 'bg-amber-500/10' : ''}`}>
+                    <input
+                      value={syllable}
+                      onChange={(e) => setLyrics((prev) => ({ ...prev, [b]: e.target.value }))}
+                      onMouseDown={(e) => e.stopPropagation()}
+                      onTouchStart={(e) => e.stopPropagation()}
+                      placeholder=""
+                      title={`Beat ${b + 1} — clique para digitar a sílaba cantada aqui`}
+                      className={`w-full text-[11px] bg-transparent border-none outline-none font-serif italic leading-none py-1 px-0.5 truncate focus:overflow-visible focus:z-10 focus:relative transition-colors ${
+                        isActive && syllable ? 'text-amber-300 font-semibold' : syllable ? 'text-stone-400' : 'text-stone-800 placeholder:text-stone-900'
+                      }`}
+                    />
+                    {isActive && syllable && <span className="absolute bottom-0 left-0 right-0 h-px bg-amber-500/50 pointer-events-none" />}
+                  </div>
+                );
+              })}
             </div>
-              );
-            })()}
           </div>
+            );
+          })()}
         </div>
 
-        <p className="mt-3 text-xs text-stone-600 text-center">
-          Para <strong className="text-stone-500">acorde/pinçada</strong>: clique em várias cordas na <strong className="text-stone-500">mesma coluna</strong> (mesma batida)
-        </p>
+        {/* Botões de navegação da tab */}
+        <div className="flex justify-center gap-6 -mt-1 pb-0.5">
+          <button
+            className="w-9 h-9 rounded-full flex items-center justify-center bg-stone-700 hover:bg-stone-600 active:bg-amber-500 text-stone-300 active:text-stone-900 transition-colors"
+            onClick={() => {
+              if (scrollRef.current) {
+                scrollRef.current.scrollBy({ left: -300, behavior: 'smooth' });
+              }
+            }}
+          >
+            <ArrowLeft size={18} />
+          </button>
+          <button
+            className="w-9 h-9 rounded-full flex items-center justify-center bg-stone-700 hover:bg-stone-600 active:bg-amber-500 text-stone-300 active:text-stone-900 transition-colors"
+            onClick={() => {
+              if (scrollRef.current) {
+                scrollRef.current.scrollBy({ left: 300, behavior: 'smooth' });
+              }
+            }}
+          >
+            <ArrowLeft size={18} className="rotate-180" />
+          </button>
+        </div>
       </div>
+
+      {/* ═══ Tablatura Completa (preview para PDF) ═══ */}
+      {(() => {
+        const COLS_PER_LINE = subdivMode ? 64 : 32;
+        const techSymbol = (cell: CellData): string => {
+          if (!cell) return '-';
+          let s = String(cell.fret);
+          if (cell.tech === 'hammer') s += 'h';
+          if (cell.tech === 'pull') s += 'p';
+          if (cell.tech === 'slide-up') s += '/';
+          if (cell.tech === 'slide-down') s += '\\';
+          if (cell.tech === 'arpeggio') s = '⫰' + s;
+          if (cell.tech === 'mute') s = 'x' + s;
+          return s;
+        };
+        const pad = (s: string, w: number) => s.length >= w ? s : s + '-'.repeat(w - s.length);
+
+        // Group syllables into full words: uppercase = new word, lowercase = continuation
+        const wordAtBeat: Record<number, string> = {};
+        const isContinuation = new Set<number>();
+        {
+          let curWord = '';
+          let curStart = -1;
+          for (let b = 0; b < beats; b++) {
+            const ly = (lyrics[b] || '').trim();
+            if (!ly) continue;
+            const startsUpper = ly[0] === ly[0].toUpperCase() && ly[0] !== ly[0].toLowerCase();
+            if (startsUpper || curStart < 0) {
+              if (curStart >= 0) wordAtBeat[curStart] = curWord;
+              curStart = b;
+              curWord = ly;
+            } else {
+              curWord += ly;
+              isContinuation.add(b);
+            }
+          }
+          if (curStart >= 0) wordAtBeat[curStart] = curWord;
+        }
+
+        const lines: { chordLine: string; strings: string[]; lyricsLine: string }[] = [];
+
+        for (let start = 0; start < beats; start += COLS_PER_LINE) {
+          const end = Math.min(start + COLS_PER_LINE, beats);
+          let chordLine = '   ';
+          const strings = STRING_LABELS.map((l) => l + '|');
+
+          // Compute column widths based only on fret content (not word lengths)
+          const colW: number[] = [];
+          for (let b = start; b < end; b++) {
+            let maxW = 1;
+            for (let s = 0; s < STRING_COUNT; s++) {
+              const cell = grid[b]?.[s];
+              if (cell) maxW = Math.max(maxW, techSymbol(cell).length);
+            }
+            colW.push(Math.max(maxW + 1, 3));
+          }
+
+          for (let i = 0; i < end - start; i++) {
+            const b = start + i;
+            const w = colW[i];
+            const ch = chords[b]?.name || '';
+            chordLine += ch ? ch + ' '.repeat(Math.max(0, w - ch.length)) : ' '.repeat(w);
+            for (let s = 0; s < STRING_COUNT; s++) {
+              const cell = grid[b]?.[s];
+              strings[s] += pad(cell ? techSymbol(cell) : '-', w);
+            }
+          }
+
+          // Build lyrics line using position cursor — words appear at their beat's column offset
+          // and flow naturally over continuation beats (which are blank)
+          let lyricsLine = '   ';
+          let cursorPos = 3; // same prefix width
+          for (let i = 0; i < end - start; i++) {
+            const b = start + i;
+            const w = colW[i];
+            const word = wordAtBeat[b];
+            if (word) {
+              // Pad to cursor position then write word
+              while (lyricsLine.length < cursorPos) lyricsLine += ' ';
+              lyricsLine += word;
+            }
+            // continuation beats: just advance cursor, write nothing
+            cursorPos += w;
+          }
+
+          lines.push({ chordLine, strings: strings.map((s) => s + '|'), lyricsLine });
+        }
+
+        return (
+          <div className="shrink-0 px-4 py-6 border-t border-stone-800">
+            <h2 className="text-lg font-semibold text-stone-300 mb-4">📋 Tablatura Completa</h2>
+            <div id="tab-preview" className="bg-stone-950 rounded-lg p-5 font-mono text-xs leading-[18px] text-stone-400 whitespace-pre overflow-x-auto" style={{ scrollbarWidth: 'thin' }}>
+              {lines.map((line, i) => (
+                <div key={i} className="mb-6">
+                  {line.chordLine.trim() && <div className="text-amber-400 font-bold">{line.chordLine}</div>}
+                  {line.strings.map((s, si) => <div key={si}>{s}</div>)}
+                  {line.lyricsLine.trim() && <div className="text-emerald-400 italic mt-0.5">{line.lyricsLine}</div>}
+                </div>
+              ))}
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* ═══ Cifra (Letra + Acordes) para PDF ═══ */}
+      {(() => {
+        // Auto-generate cifra text from grid data
+        const generateCifra = (): string => {
+          type Token = { text: string; chord: string };
+          const tokens: Token[] = [];
+          let activeChord = '';
+
+          // Collect raw syllables/lyrics per beat
+          const rawParts: { text: string; chord: string }[] = [];
+          for (let b = 0; b < beats; b++) {
+            const ch = chords[b]?.name || '';
+            const ly = lyrics[b] || '';
+            if (ch) activeChord = ch;
+            if (ly) {
+              const trimmed = ly.trim();
+              if (trimmed) {
+                rawParts.push({ text: trimmed, chord: ch || (rawParts.length === 0 ? activeChord : '') });
+              }
+            } else if (ch) {
+              rawParts.push({ text: '', chord: ch });
+            }
+          }
+
+          // Join syllables into words: uppercase first letter = start of new word
+          for (let i = 0; i < rawParts.length; i++) {
+            const part = rawParts[i];
+            const isWordStart = part.text.length > 0 && part.text[0] === part.text[0].toUpperCase() && part.text[0] !== part.text[0].toLowerCase();
+            // If not a word start and previous token has text, merge into previous
+            if (!isWordStart && part.text && tokens.length > 0 && tokens[tokens.length - 1].text) {
+              tokens[tokens.length - 1].text += part.text;
+              // If this part has a chord assigning, keep it on a merged token only if previous had none
+              if (part.chord && !tokens[tokens.length - 1].chord) {
+                tokens[tokens.length - 1].chord = part.chord;
+              }
+            } else {
+              tokens.push({ text: part.text, chord: part.chord });
+            }
+          }
+
+          const lines: string[] = [];
+          let cLine = '';
+          let lLine = '';
+          let lastChordEmitted = '';
+
+          const flush = () => {
+            if (cLine || lLine) {
+              if (cLine.trim()) lines.push(cLine.trimEnd());
+              lines.push(lLine.trimEnd());
+              lines.push('');
+              cLine = '';
+              lLine = '';
+            }
+          };
+
+          for (const tk of tokens) {
+            const word = tk.text || '';
+            const chord = tk.chord;
+            const needChord = chord && chord !== lastChordEmitted;
+            const minWidth = Math.max(word.length, needChord ? chord.length : 0) + 1;
+            if (lLine.length + minWidth > 80 && lLine.length > 0) flush();
+            while (cLine.length < lLine.length) cLine += ' ';
+            if (needChord) { cLine += chord; lastChordEmitted = chord; }
+            lLine += word.padEnd(minWidth);
+          }
+          flush();
+
+          return lines.join('\n').trimEnd();
+        };
+
+        // Auto-sync: regenerate when not manually edited
+        const generated = generateCifra();
+        if (!cifraEdited && generated !== cifraText) {
+          // Schedule state update after render
+          setTimeout(() => setCifraText(generated), 0);
+        }
+
+        const hasContent = cifraEdited ? cifraText.trim().length > 0 : generated.trim().length > 0;
+        const displayText = cifraEdited ? cifraText : generated;
+
+        return hasContent || cifraEdited ? (
+          <div className="shrink-0 px-4 py-6 border-t border-stone-800">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-lg font-semibold text-stone-300">🎵 Cifra (Letra + Acordes)</h2>
+              {cifraEdited && (
+                <button
+                  onClick={() => { setCifraEdited(false); setCifraText(generated); }}
+                  className="text-xs px-3 py-1 rounded bg-stone-700 hover:bg-stone-600 text-stone-300 transition-colors"
+                >
+                  ↻ Regerar da tab
+                </button>
+              )}
+            </div>
+            <textarea
+              id="cifra-preview"
+              value={displayText}
+              onChange={(e) => { setCifraText(e.target.value); setCifraEdited(true); }}
+              spellCheck={false}
+              className="w-full bg-stone-950 rounded-lg p-5 font-mono text-sm leading-relaxed text-stone-300 overflow-x-auto resize-y outline-none border border-stone-800 focus:border-amber-500/50 transition-colors"
+              style={{ scrollbarWidth: 'thin', minHeight: '200px', whiteSpace: 'pre', overflowWrap: 'normal' }}
+              rows={Math.max(8, displayText.split('\n').length + 2)}
+            />
+          </div>
+        ) : null;
+      })()}
+
     </div>
   );
 };

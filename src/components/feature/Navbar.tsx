@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { Link } from 'react-router-dom';
 import LogoIcon from './LogoIcon';
 
 const Navbar = () => {
@@ -60,6 +61,16 @@ const Navbar = () => {
             ))}
           </div>
 
+          {/* TabVinde desktop */}
+          <Link
+            to="/tabmaker"
+            className={`hidden md:block text-sm font-medium px-4 py-2 rounded-full border transition-colors duration-200 ${
+              scrolled ? 'border-amber-600 text-amber-600 hover:bg-amber-600 hover:text-white' : 'border-amber-400 text-amber-400 hover:bg-amber-400 hover:text-stone-900'
+            }`}
+          >
+            TabVinde
+          </Link>
+
           {/* CTA desktop */}
           <button
             onClick={() => scrollTo('assinatura')}
@@ -93,9 +104,16 @@ const Navbar = () => {
               {link.label}
             </button>
           ))}
+          <Link
+            to="/tabmaker"
+            onClick={() => setMenuOpen(false)}
+            className="mt-1 border border-amber-500 text-amber-400 hover:bg-amber-500 hover:text-stone-900 text-sm font-medium px-4 py-2 rounded-full transition-colors duration-200 text-center"
+          >
+            TabVinde
+          </Link>
           <button
             onClick={() => scrollTo('assinatura')}
-            className="mt-2 bg-amber-600 hover:bg-amber-500 text-white text-sm font-medium px-4 py-2 rounded-full transition-colors duration-200 w-full"
+            className="mt-1 bg-amber-600 hover:bg-amber-500 text-white text-sm font-medium px-4 py-2 rounded-full transition-colors duration-200 w-full"
           >
             Assinar
           </button>
