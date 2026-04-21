@@ -13,8 +13,8 @@ const HomePage = () => {
       <Navbar />
       <main>
         <HeroSection />
-        <AssinaturaSection />
         <TablaturasSection />
+        <AssinaturaSection />
         <PingenteSection />
         <SobreSection />
         <CtaSection />
