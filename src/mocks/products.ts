@@ -1,8 +1,8 @@
 export const tablaturas = [
   {
     id: 1,
-    title: 'Ave Maria (Schubert)',
-    composer: 'Franz Schubert / Arr. Fingerstyle',
+    title: 'Jardim',
+    composer: 'Fraternidade São João Paulo II',
     pages: 4,
     hasVideo: true,
     videoId: null as string | null,
@@ -23,7 +23,7 @@ export const tablaturas = [
   {
     id: 2,
     title: 'Pai Nosso (Fingerstyle)',
-    composer: 'Tradicional / Arr. Exclusivo',
+    composer: 'Tradicional',
     pages: 3,
     hasVideo: true,
     videoId: null as string | null,
@@ -40,7 +40,7 @@ export const tablaturas = [
   {
     id: 3,
     title: 'Salve Regina',
-    composer: 'Gregoriano / Arr. Fingerstyle',
+    composer: 'Gregoriano',
     pages: 6,
     hasVideo: true,
     videoId: null as string | null,
@@ -76,7 +76,7 @@ export const tablaturas = [
   {
     id: 6,
     title: 'Kyrie Eleison',
-    composer: 'Tradicional / Arr. Exclusivo',
+    composer: 'Tradicional',
     pages: 3,
     hasVideo: false,
     videoId: null as string | null,
@@ -88,7 +88,7 @@ export const tablaturas = [
   {
     id: 7,
     title: 'Tantum Ergo',
-    composer: 'Saint-Saëns / Arr. Fingerstyle',
+    composer: 'Saint-Saëns',
     pages: 4,
     hasVideo: true,
     videoId: null as string | null,
@@ -100,7 +100,7 @@ export const tablaturas = [
   {
     id: 8,
     title: 'O Filii et Filiae',
-    composer: 'Gregoriano / Arr. Fingerstyle',
+    composer: 'Gregoriano',
     pages: 7,
     hasVideo: true,
     videoId: null as string | null,
