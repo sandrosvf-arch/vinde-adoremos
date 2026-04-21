@@ -1,14 +1,10 @@
-import { Music, Monitor, ChevronDown } from 'lucide-react';
-import { tablaturas, videoAulas } from '@/mocks/products';
+import { Music, ChevronDown } from 'lucide-react';
 
 const HeroSection = () => {
   const scrollTo = (id: string) => {
     const el = document.getElementById(id);
     if (el) el.scrollIntoView({ behavior: 'smooth' });
   };
-
-  const totalTablaturas = tablaturas.length;
-  const totalVideoAulas = videoAulas.length;
 
   return (
     <section className="relative min-h-screen flex items-center overflow-hidden bg-[#060607]">
@@ -63,14 +59,10 @@ const HeroSection = () => {
         </div>
 
         {/* Stats */}
-        <div className="flex flex-wrap justify-center sm:justify-start items-center gap-8 text-stone-400 text-sm">
+        <div className="flex flex-wrap justify-center sm:justify-start items-center gap-2 text-stone-400 text-sm">
           <span className="flex items-center gap-2">
             <Music className="w-4 h-4" />
-            +{totalTablaturas} Tablaturas
-          </span>
-          <span className="flex items-center gap-2">
-            <Monitor className="w-4 h-4" />
-            +{totalVideoAulas} Vídeo Aulas
+            +120 músicas com vídeo aula e técnicas avançadas
           </span>
         </div>
       </div>

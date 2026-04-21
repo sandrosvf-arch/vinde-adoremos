@@ -17,7 +17,7 @@ const Footer = () => {
               <span className="text-white font-semibold">Vinde Adoremos</span>
             </div>
             <p className="text-stone-400 text-sm leading-relaxed">
-              Música sacra para violão fingerstyle. Do gregoriano ao barroco, com amor e devoção.
+              Música Cristã em arranjo fingerstyle para violão.
             </p>
           </div>
 
@@ -28,8 +28,6 @@ const Footer = () => {
               {[
                 { label: 'Assinatura', id: 'assinatura' },
                 { label: 'Tablaturas', id: 'tablatura-isolada' },
-                { label: 'Vídeo Aulas', id: 'tablatura-video' },
-                { label: 'Loja', id: 'pingente' },
               ].map((link) => (
                 <li key={link.id}>
                   <button
@@ -47,9 +45,8 @@ const Footer = () => {
           <div>
             <h4 className="text-white font-medium mb-4 text-sm">Contato</h4>
             <ul className="space-y-2 text-stone-400 text-sm">
-              <li>contato@vindeadoremos.com.br</li>
-              <li>Instagram: @vindeadoremos</li>
-              <li>YouTube: Vinde Adoremos</li>
+              <li>TikTok: @vindeadoremosoficial</li>
+              <li>Instagram: @vindeadoremos_</li>
             </ul>
           </div>
         </div>

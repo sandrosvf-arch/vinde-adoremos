@@ -3,7 +3,6 @@ import Footer from '@/components/feature/Footer';
 import HeroSection from './components/HeroSection';
 import AssinaturaSection from './components/AssinaturaSection';
 import TablaturasSection from './components/TablaturasSection';
-import PingenteSection from './components/PingenteSection';
 import SobreSection from './components/SobreSection';
 import CtaSection from './components/CtaSection';
 
@@ -15,7 +14,6 @@ const HomePage = () => {
         <HeroSection />
         <TablaturasSection />
         <AssinaturaSection />
-        <PingenteSection />
         <SobreSection />
         <CtaSection />
       </main>

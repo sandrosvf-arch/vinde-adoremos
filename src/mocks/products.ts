@@ -218,6 +218,7 @@ export const planos = [
     features: [
       'Acesso completo a todas as tablaturas',
       'Acesso completo a todas as vídeo aulas',
+      'Acesso ao TABVINDE — crie e salve suas tablaturas',
       'Novos conteúdos toda semana',
       'Suporte prioritário',
     ],
@@ -236,6 +237,7 @@ export const planos = [
     features: [
       'Acesso completo a todas as tablaturas',
       'Acesso completo a todas as vídeo aulas',
+      'Acesso ao TABVINDE — crie e salve suas tablaturas',
       'Novos conteúdos toda semana',
       'Suporte prioritário',
     ],

@@ -3,7 +3,7 @@ import { planos } from '@/mocks/products';
 
 const AssinaturaSection = () => {
   return (
-    <section id="assinatura" className="py-24 bg-[#060607]">
+    <section id="assinatura" className="pt-6 pb-24 sm:py-24 bg-[#060607]">
       <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8">
 
         {/* Header */}
@@ -29,13 +29,13 @@ const AssinaturaSection = () => {
               key={plano.id}
               className={`relative rounded-2xl flex flex-col transition-transform duration-200 hover:-translate-y-1 ${
                 plano.highlight
-                  ? 'bg-white text-stone-900 shadow-2xl shadow-black/40 p-10'
-                  : 'bg-stone-900/60 border border-stone-800 text-white p-8'
+                  ? 'bg-white text-stone-900 shadow-2xl shadow-black/40 p-10 order-first md:order-none'
+                  : 'bg-stone-900/60 border border-stone-800 text-white p-8 order-last md:order-none'
               }`}
             >
               {plano.highlight && (
                 <div className="absolute -top-4 left-1/2 -translate-x-1/2 flex items-center gap-1.5 bg-stone-900 text-white text-xs font-bold px-4 py-1.5 rounded-full border border-stone-700">
-                  <Star className="w-3 h-3 fill-white text-white" />
+                  <Star className="w-3 h-3 fill-amber-500 text-amber-500" />
                   Mais vantajoso
                 </div>
               )}

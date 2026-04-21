@@ -494,7 +494,7 @@ const AprenderPage = () => {
         {/* Back */}
         <button
           onClick={() => navigate(-1)}
-          className="flex items-center gap-2 text-stone-500 hover:text-white text-sm transition-colors duration-200 mb-6"
+          className="inline-flex items-center gap-2 text-stone-300 hover:text-white text-sm font-semibold border border-stone-700 hover:border-stone-500 px-4 py-2 rounded-full transition-all duration-200 mb-6"
         >
           <ArrowLeft className="w-4 h-4" />
           Voltar
