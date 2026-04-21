@@ -102,7 +102,6 @@ const Navbar = () => {
           ))}
           <Link
             to="/tabmaker"
-            onClick={() => setMenuOpen(false)}
             className="mt-1 border border-amber-500 text-amber-400 hover:bg-amber-500 hover:text-stone-900 text-sm font-medium px-4 py-2 rounded-full transition-colors duration-200 text-center"
           >
             TabVinde

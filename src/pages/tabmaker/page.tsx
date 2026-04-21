@@ -325,6 +325,8 @@ const TabmakerPage = () => {
   const clipboardRef = useRef<{ cells: CellData[][]; lyrics: Record<number, string>; chords: Record<number, ChordLabel> } | null>(null);
   const [, setFretInputBuffer] = useState<string>('');
   const fretInputTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const slideInputRef = useRef<{ from: number; tech: 'slide-up' | 'slide-down' } | null>(null);
+  const [slideEditValue, setSlideEditValue] = useState<string>('');
   const [detectedBpm, setDetectedBpm] = useState<number | null>(null);
   const [cifraText, setCifraText] = useState<string>('');
   const [cifraEdited, setCifraEdited] = useState(false);
@@ -349,6 +351,7 @@ const TabmakerPage = () => {
   // Continuous drag-to-scroll — only activate if mouse moved > 4px
   const scrollRef = useRef<HTMLDivElement>(null);
   const dragRef = useRef<{ startX: number; startScrollLeft: number; moved: boolean } | null>(null);
+  const scrollbarRef = useRef<HTMLInputElement>(null);
 
   const onDragStart = useCallback((clientX: number) => {
     dragRef.current = { startX: clientX, startScrollLeft: scrollRef.current?.scrollLeft ?? 0, moved: false };
@@ -644,6 +647,38 @@ const TabmakerPage = () => {
   const isPlayingRef = useRef(isPlaying);
   isPlayingRef.current = isPlaying;
 
+  // Native scrollbar <-> scroll container sync (bypasses React batching for zero latency)
+  useEffect(() => {
+    const bar = scrollbarRef.current;
+    const container = scrollRef.current;
+    if (!bar || !container) return;
+    let dragging = false;
+
+    const onBarInput = () => {
+      const ratio = parseFloat(bar.value);
+      const max = container.scrollWidth - container.clientWidth;
+      container.scrollLeft = ratio * max;
+    };
+    const onContainerScroll = () => {
+      if (dragging) return;
+      const max = container.scrollWidth - container.clientWidth;
+      bar.value = String(max > 0 ? container.scrollLeft / max : 0);
+    };
+    const onDown = () => { dragging = true; };
+    const onUp   = () => { dragging = false; };
+
+    bar.addEventListener('input', onBarInput);
+    bar.addEventListener('pointerdown', onDown);
+    window.addEventListener('pointerup', onUp);
+    container.addEventListener('scroll', onContainerScroll, { passive: true });
+    return () => {
+      bar.removeEventListener('input', onBarInput);
+      bar.removeEventListener('pointerdown', onDown);
+      window.removeEventListener('pointerup', onUp);
+      container.removeEventListener('scroll', onContainerScroll);
+    };
+  }, []);
+
   // Auto-scroll to keep playhead visible
   useEffect(() => {
     if (currentBeat === null || !scrollRef.current) return;
@@ -679,6 +714,18 @@ const TabmakerPage = () => {
   chordsRef.current = chords;
   const capoRef = useRef(capo);
   capoRef.current = capo;
+
+  // Sync slide edit value when navigating to a slide cell
+  useEffect(() => {
+    if (selectedBeat === null) { setSlideEditValue(''); return; }
+    const cell = gridRef.current[selectedBeat]?.[selectedString];
+    if (cell?.tech === 'slide-up' || cell?.tech === 'slide-down') {
+      const sep = cell.tech === 'slide-up' ? '/' : '\\';
+      setSlideEditValue(`${cell.slideTo ?? ''}${sep}${cell.fret}`);
+    } else {
+      setSlideEditValue('');
+    }
+  }, [selectedBeat, selectedString]);
 
   // Load FluidR3_GM nylon guitar soundfont (one sample per chromatic note = zero pitch-shifting)
   useEffect(() => {
@@ -898,10 +945,75 @@ const TabmakerPage = () => {
       // Escape — clear selection
       if (e.key === 'Escape') {
         setSelAnchor(null);
+        slideInputRef.current = null;
+      }
+      // '/' → slide-up, '\' → slide-down  — notação: 5/7 ou 7\5
+      if ((e.key === '/' || e.key === '\\') && selectedBeat !== null) {
+        e.preventDefault();
+        setFretInputBuffer((prevBuf) => {
+          const fromFret = prevBuf.length > 0
+            ? parseInt(prevBuf, 10)
+            : (gridRef.current[selectedBeat]?.[selectedString]?.fret ?? null);
+          if (fromFret === null || isNaN(fromFret)) return prevBuf;
+          const tech: Technique = e.key === '/' ? 'slide-up' : 'slide-down';
+          slideInputRef.current = { from: fromFret, tech };
+          commit();
+          setGrid((prev) => {
+            const next = prev.map((b) => [...b]);
+            const existing = next[selectedBeat][selectedString];
+            next[selectedBeat][selectedString] = {
+              fret: existing?.fret ?? fromFret,
+              tech,
+              slideTo: fromFret,
+            };
+            return next;
+          });
+          setSelectedTech(tech);
+          setSlideToValue(fromFret);
+          if (fretInputTimer.current) clearTimeout(fretInputTimer.current);
+          fretInputTimer.current = setTimeout(() => {
+            slideInputRef.current = null;
+            setFretInputBuffer('');
+          }, 2000);
+          return `${fromFret}${e.key}`;
+        });
       }
       // Number keys (0-9) — set fret or muteAfter on selected cell
       if (/^[0-9]$/.test(e.key) && selectedBeat !== null) {
         e.preventDefault();
+        // Se estiver em modo slide-notation (ex: digitou "5/"), próximos dígitos são o frete destino
+        if (slideInputRef.current) {
+          const { from, tech } = slideInputRef.current;
+          setFretInputBuffer((prevBuf) => {
+            const sepChar = tech === 'slide-up' ? '/' : '\\';
+            const sepIdx = prevBuf.indexOf(sepChar);
+            const afterSep = sepIdx >= 0 ? prevBuf.slice(sepIdx + 1) : '';
+            const newAfter = afterSep + e.key;
+            let toFret = parseInt(newAfter, 10);
+            if (toFret > MAX_FRET) {
+              toFret = parseInt(e.key, 10);
+              setGrid((prev) => {
+                const next = prev.map((b) => [...b]);
+                next[selectedBeat][selectedString] = { fret: toFret, tech, slideTo: from };
+                return next;
+              });
+              setSlideToValue(from);
+              if (fretInputTimer.current) clearTimeout(fretInputTimer.current);
+              fretInputTimer.current = setTimeout(() => { slideInputRef.current = null; setFretInputBuffer(''); }, 800);
+              return `${from}${sepChar}${e.key}`;
+            }
+            setGrid((prev) => {
+              const next = prev.map((b) => [...b]);
+              next[selectedBeat][selectedString] = { fret: toFret, tech, slideTo: from };
+              return next;
+            });
+            setSlideToValue(from);
+            if (fretInputTimer.current) clearTimeout(fretInputTimer.current);
+            fretInputTimer.current = setTimeout(() => { slideInputRef.current = null; setFretInputBuffer(''); }, 800);
+            return `${from}${sepChar}${newAfter}`;
+          });
+          return;
+        }
         // Check if selected cell has mute technique — edit muteAfter instead
         const existingCell = gridRef.current[selectedBeat]?.[selectedString];
         if (existingCell && existingCell.tech === 'mute') {
@@ -978,8 +1090,9 @@ const TabmakerPage = () => {
           });
         }
       }
-      // Enter — set startBeat to selectedBeat
+      // Enter — set startBeat to selectedBeat (only if slide input isn't focused)
       if (e.key === 'Enter') {
+        if (document.activeElement?.tagName === 'INPUT') return;
         setSelectedBeat((cur) => {
           if (cur !== null && !isPlayingRef.current) setStartBeat(cur);
           return cur;
@@ -1152,17 +1265,23 @@ const TabmakerPage = () => {
                   : (cell.slideTo !== undefined ? cell.slideTo : targetFret + 2);
                 const steps = Math.abs(targetFret - fromFret);
                 if (steps === 0) {
-                  sampler.triggerAttackRelease(note, duration, t, 0.7);
+                  sampler.triggerAttackRelease(note, duration, t, 0.78);
                 } else {
-                  const stepTime = beatSecs / (steps + 1);
                   const dir = targetFret > fromFret ? 1 : -1;
-                  for (let i = 0; i <= steps; i++) {
+                  // Slide ocorre nos primeiros ~50% da batida (máx 40ms por casa)
+                  const slideWindow = Math.min(beatSecs * 0.5, steps * 0.04);
+                  // Nota de origem: ataque normal, curta (dedo já desliza)
+                  const originNote = noteAtFret(s, fromFret);
+                  sampler.triggerAttackRelease(originNote, '32n', t, 0.75);
+                  // Fretes intermediários: ghost notes quase inaudíveis (simulam o deslizamento)
+                  for (let i = 1; i < steps; i++) {
                     const slideFret = fromFret + dir * i;
                     const slideNote = noteAtFret(s, slideFret);
-                    const vel = i === 0 ? 0.55 : i === steps ? 0.85 : 0.25;
-                    const noteDur = i < steps ? '64n' : duration;
-                    sampler.triggerAttackRelease(slideNote, noteDur, t + i * stepTime, vel);
+                    const stepT = t + (slideWindow * i) / steps;
+                    sampler.triggerAttackRelease(slideNote, '256n', stepT, 0.06);
                   }
+                  // Nota destino: chega após o slide e sustenta normalmente
+                  sampler.triggerAttackRelease(note, duration, t + slideWindow, 0.85);
                 }
                 break;
               }
@@ -1527,12 +1646,17 @@ const TabmakerPage = () => {
         ))}
         {(selectedTech === 'slide-up' || selectedTech === 'slide-down') && (
           <>
-            <span className="text-[10px] text-stone-500 ml-1 shrink-0">→ frete:</span>
+            <span className="text-[10px] text-stone-500 ml-1 shrink-0">de frete:</span>
             <input type="number" min={0} max={MAX_FRET} value={slideToValue}
               onChange={(e) => setSlideToValue(Math.max(0, Math.min(MAX_FRET, Number(e.target.value))))}
               onMouseDown={(e) => e.stopPropagation()}
               className="w-12 px-1.5 py-1 rounded-lg text-[11px] bg-stone-800 border border-amber-700/50 text-amber-300 font-mono outline-none focus:border-amber-500 shrink-0"
             />
+            <span className="text-[11px] font-mono text-amber-400 shrink-0">
+              {selectedTech === 'slide-up'
+                ? `${slideToValue} / ${selectedFret}`
+                : `${slideToValue} \\ ${selectedFret}`}
+            </span>
           </>
         )}
         {selectedTech === 'mute' && (
@@ -1637,8 +1761,8 @@ const TabmakerPage = () => {
         {/* Strip rolável */}
         <div
           ref={scrollRef}
-          className={`flex-1 min-h-0 overflow-x-hidden overflow-y-auto select-none ${structureMode ? 'cursor-default' : 'cursor-grab active:cursor-grabbing'}`}
-          style={{ scrollbarWidth: 'none' }}
+          className={`shrink-0 overflow-x-scroll overflow-y-visible select-none ${structureMode ? 'cursor-default' : 'cursor-grab active:cursor-grabbing'}`}
+          style={{ scrollbarWidth: 'none', willChange: 'transform' }}
           onMouseDown={(e) => { if (!structureMode) onDragStart(e.clientX); }}
           onMouseMove={(e) => { if (!structureMode && e.buttons === 1) onDragMove(e.clientX); }}
           onMouseUp={onDragEnd}
@@ -1650,7 +1774,7 @@ const TabmakerPage = () => {
           {(() => {
             const colsPerBar = subdivMode ? 8 : 4;
             return (
-          <div style={{ width: beats * 40 + 40 }}>
+          <div style={{ width: beats * 40 + 40, willChange: 'transform' }}>
 
             {/* Linha de acordes — um campo por beat */}
             <div className="flex mb-0.5">
@@ -1781,7 +1905,22 @@ const TabmakerPage = () => {
                         setSelectedBeat(b);
                         setSelectedString(s);
                         setFretInputBuffer('');
-                        if (!structureMode) toggleCell(b, s);
+                        if (!structureMode) {
+                          const isSlideTech = selectedTech === 'slide-up' || selectedTech === 'slide-down';
+                          const existingCell = gridRef.current[b][s];
+                          if (isSlideTech && existingCell && (existingCell.tech === 'slide-up' || existingCell.tech === 'slide-down')) {
+                            // Cell already has slide note — just select for inline editing, don't toggle off
+                            const sep = existingCell.tech === 'slide-up' ? '/' : '\\';
+                            setSlideEditValue(`${existingCell.slideTo ?? ''}${sep}${existingCell.fret}`);
+                          } else {
+                            toggleCell(b, s);
+                            if (isSlideTech && existingCell === null) {
+                              // Just created a slide note — init edit value
+                              const sep = selectedTech === 'slide-up' ? '/' : '\\';
+                              setSlideEditValue(`${slideToValue}${sep}${selectedFret}`);
+                            }
+                          }
+                        }
                       }}
                       onMouseEnter={() => { if (!structureMode) setHoveredCell({ b, s }); }}
                       onMouseLeave={() => setHoveredCell(null)}
@@ -1801,21 +1940,83 @@ const TabmakerPage = () => {
                           {selectedFret}
                         </span>
                       )}
-                      {hasNote && (
-                        <span className={`relative z-10 font-mono font-bold px-1 py-0.5 rounded-sm leading-none ${isSubBeat ? 'text-[10px]' : 'text-xs'} ${
-                          belowCapo ? 'bg-red-900/70 text-red-400 line-through'
-                          : isSubBeat && !tech ? 'bg-stone-700 text-stone-300'
-                          : tech === 'hammer' ? 'bg-blue-200 text-stone-950'
-                          : tech === 'pull'   ? 'bg-purple-200 text-stone-950'
-                          : tech === 'slide-up' || tech === 'slide-down' ? 'bg-amber-200 text-stone-950'
-                          : tech === 'arpeggio' ? 'bg-emerald-200 text-stone-950'
-                          : tech === 'mute' ? 'bg-red-200 text-stone-950'
-                          : isActive ? 'bg-stone-300 text-stone-950'
-                          : 'bg-stone-200 text-stone-950'
-                        }`}>
-                          {tech === 'slide-up' ? '/' : tech === 'slide-down' ? '\\' : tech === 'hammer' ? 'h' : tech === 'pull' ? 'p' : tech === 'arpeggio' ? '⫰' : ''}{fret}{tech === 'mute' ? <span className="text-[8px] text-red-400">x{cell?.muteAfter}</span> : ''}
-                        </span>
-                      )}
+                      {hasNote && (() => {
+                          const isSlide = tech === 'slide-up' || tech === 'slide-down';
+                          // Inline editable input for slide cells
+                          if (isSlide && isSelected) {
+                            return (
+                              <input
+                                autoFocus
+                                value={slideEditValue}
+                                onChange={(e) => {
+                                  const val = e.target.value;
+                                  setSlideEditValue(val);
+                                  const fwdIdx = val.indexOf('/');
+                                  const bwdIdx = val.indexOf('\\');
+                                  const sepIdx = fwdIdx !== -1 ? fwdIdx : bwdIdx;
+                                  if (sepIdx > 0) {
+                                    const fromN = parseInt(val.slice(0, sepIdx), 10);
+                                    const toN   = parseInt(val.slice(sepIdx + 1), 10);
+                                    const slideTech: Technique = fwdIdx !== -1 ? 'slide-up' : 'slide-down';
+                                    if (!isNaN(fromN) && !isNaN(toN) && fromN >= 0 && fromN <= MAX_FRET && toN >= 0 && toN <= MAX_FRET) {
+                                      setGrid((prev) => {
+                                        const next = prev.map((row) => [...row]);
+                                        next[b][s] = { fret: toN, tech: slideTech, slideTo: fromN };
+                                        return next;
+                                      });
+                                      setSlideToValue(fromN);
+                                      setSelectedTech(slideTech);
+                                    }
+                                  } else {
+                                    const fretN = parseInt(val, 10);
+                                    if (!isNaN(fretN) && fretN >= 0 && fretN <= MAX_FRET) {
+                                      setGrid((prev) => {
+                                        const next = prev.map((row) => [...row]);
+                                        const ex = next[b][s];
+                                        if (ex) next[b][s] = { ...ex, fret: fretN };
+                                        return next;
+                                      });
+                                    }
+                                  }
+                                }}
+                                onMouseDown={(e) => e.stopPropagation()}
+                                onTouchStart={(e) => e.stopPropagation()}
+                                onKeyDown={(e) => {
+                                  e.stopPropagation();
+                                  if (e.key === 'Enter' || e.key === 'Escape') {
+                                    e.preventDefault(); // prevent button click trigger on Enter
+                                    (e.target as HTMLInputElement).blur();
+                                  }
+                                }}
+                                onFocus={(e) => e.target.select()}
+                                className="absolute inset-0 w-full h-full text-center text-[9px] font-mono font-bold bg-amber-100 text-stone-950 outline-none border-2 border-amber-500 rounded-sm z-40 p-0"
+                              />
+                            );
+                          }
+                          const slideFrom = cell?.slideTo;
+                          const slideLabel = isSlide
+                            ? (slideFrom !== undefined ? `${slideFrom}${tech === 'slide-up' ? '/' : '\\'}${fret}` : `${tech === 'slide-up' ? '/' : '\\'}${fret}`)
+                            : null;
+                          return (
+                          <span className={`relative z-10 font-mono font-bold px-1 py-0.5 rounded-sm leading-none ${
+                            isSlide ? 'text-[9px]' : isSubBeat ? 'text-[10px]' : 'text-xs'
+                          } ${
+                            belowCapo ? 'bg-red-900/70 text-red-400 line-through'
+                            : isSubBeat && !tech ? 'bg-stone-700 text-stone-300'
+                            : tech === 'hammer' ? 'bg-blue-200 text-stone-950'
+                            : tech === 'pull'   ? 'bg-purple-200 text-stone-950'
+                            : isSlide ? 'bg-amber-200 text-stone-950'
+                            : tech === 'arpeggio' ? 'bg-emerald-200 text-stone-950'
+                            : tech === 'mute' ? 'bg-red-200 text-stone-950'
+                            : isActive ? 'bg-stone-300 text-stone-950'
+                            : 'bg-stone-200 text-stone-950'
+                          }`}>
+                            {isSlide
+                              ? slideLabel
+                              : <>{tech === 'hammer' ? 'h' : tech === 'pull' ? 'p' : tech === 'arpeggio' ? '⫰' : ''}{fret}{tech === 'mute' ? <span className="text-[8px] text-red-400">x{cell?.muteAfter}</span> : ''}</>}
+                          </span>
+                          );
+                        })()}
                     </button>
                   );
                 })}
@@ -1855,27 +2056,28 @@ const TabmakerPage = () => {
           })()}
         </div>
 
-        {/* Botões de navegação da tab */}
-        <div className="flex justify-center gap-6 -mt-1 pb-0.5">
+        {/* Scrollbar de navegação da tab */}
+        <div className="flex items-center gap-2 px-1 pt-1.5 pb-1">
           <button
-            className="w-9 h-9 rounded-full flex items-center justify-center bg-stone-700 hover:bg-stone-600 active:bg-amber-500 text-stone-300 active:text-stone-900 transition-colors"
-            onClick={() => {
-              if (scrollRef.current) {
-                scrollRef.current.scrollBy({ left: -300, behavior: 'smooth' });
-              }
-            }}
+            onClick={() => scrollRef.current?.scrollBy({ left: -160, behavior: 'smooth' })}
+            className="shrink-0 w-6 h-6 flex items-center justify-center rounded text-stone-500 hover:text-amber-400 hover:bg-stone-800 transition-colors"
           >
-            <ArrowLeft size={18} />
+            <ArrowLeft size={13} />
           </button>
+          <input
+            ref={scrollbarRef}
+            type="range"
+            min={0}
+            max={1}
+            step="any"
+            defaultValue={0}
+            className="tab-scrollbar flex-1"
+          />
           <button
-            className="w-9 h-9 rounded-full flex items-center justify-center bg-stone-700 hover:bg-stone-600 active:bg-amber-500 text-stone-300 active:text-stone-900 transition-colors"
-            onClick={() => {
-              if (scrollRef.current) {
-                scrollRef.current.scrollBy({ left: 300, behavior: 'smooth' });
-              }
-            }}
+            onClick={() => scrollRef.current?.scrollBy({ left: 160, behavior: 'smooth' })}
+            className="shrink-0 w-6 h-6 flex items-center justify-center rounded text-stone-500 hover:text-amber-400 hover:bg-stone-800 transition-colors"
           >
-            <ArrowLeft size={18} className="rotate-180" />
+            <ArrowLeft size={13} className="rotate-180" />
           </button>
         </div>
       </div>
@@ -1885,11 +2087,18 @@ const TabmakerPage = () => {
         const COLS_PER_LINE = subdivMode ? 64 : 32;
         const techSymbol = (cell: CellData): string => {
           if (!cell) return '-';
-          let s = String(cell.fret);
+          const fretStr = String(cell.fret);
+          if (cell.tech === 'slide-up') {
+            const from = cell.slideTo !== undefined ? String(cell.slideTo) : '?';
+            return `${from}/${fretStr}`;
+          }
+          if (cell.tech === 'slide-down') {
+            const from = cell.slideTo !== undefined ? String(cell.slideTo) : '?';
+            return `${from}\\${fretStr}`;
+          }
+          let s = fretStr;
           if (cell.tech === 'hammer') s += 'h';
           if (cell.tech === 'pull') s += 'p';
-          if (cell.tech === 'slide-up') s += '/';
-          if (cell.tech === 'slide-down') s += '\\';
           if (cell.tech === 'arpeggio') s = '⫰' + s;
           if (cell.tech === 'mute') s = 'x' + s;
           return s;
