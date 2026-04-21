@@ -31,20 +31,19 @@ const HeroSection = () => {
         {/* Badge */}
         <div className="inline-flex items-center gap-2 border border-stone-600 text-stone-300 text-xs font-medium tracking-widest uppercase px-4 py-2 rounded-full mb-10">
           <Music className="w-3.5 h-3.5" />
-          Música Sacra · Violão Fingerstyle
+          <span>Violão Fingerstyle</span>
         </div>
 
         {/* Heading */}
         <h1 className="text-5xl sm:text-6xl md:text-7xl font-black text-white leading-tight mb-4 max-w-2xl">
-          Toque seus louvores preferidos com
+          Toque seus louvores preferidos de um jeito único
         </h1>
         <h2 className="text-4xl sm:text-5xl md:text-6xl font-serif italic text-stone-300 leading-tight mb-8">
-          técnica profissional
+          Usando a técnica fingerstyle
         </h2>
 
         <p className="text-stone-400 text-lg md:text-xl leading-relaxed mb-10 max-w-xl">
-          Aprenda fingerstyle no violão com tablaturas exclusivas, vídeo aulas e arranjos
-          que elevam a alma em adoração.
+          Tablaturas exclusivas + vídeo aulas + arranjos prontos que fazem o VIOLÃO CANTAR elevando a alma em adoração.
         </p>
 
         {/* CTAs */}
@@ -53,7 +52,7 @@ const HeroSection = () => {
             onClick={() => scrollTo('assinatura')}
             className="bg-white hover:bg-stone-100 text-stone-900 font-semibold px-8 py-4 rounded-full text-base transition-all duration-200 shadow-lg"
           >
-            Começar Assinatura
+            Quero Tocar Assim
           </button>
           <button
             onClick={() => scrollTo('tablatura-isolada')}
