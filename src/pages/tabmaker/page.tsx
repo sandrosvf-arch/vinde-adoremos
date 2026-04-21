@@ -330,6 +330,8 @@ const TabmakerPage = () => {
   const [detectedBpm, setDetectedBpm] = useState<number | null>(null);
   const [cifraText, setCifraText] = useState<string>('');
   const [cifraEdited, setCifraEdited] = useState(false);
+  const [tabPreviewOpen, setTabPreviewOpen] = useState(false);
+  const [cifraOpen, setCifraOpen] = useState(false);
   const [isLoaded, setIsLoaded] = useState(false);
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentBeat, setCurrentBeat] = useState<number | null>(null);
@@ -1927,7 +1929,7 @@ const TabmakerPage = () => {
                       className={`w-10 shrink-0 relative flex items-center justify-center transition-colors select-none
                         ${isSubBeat ? 'h-7' : 'h-10'}
                         ${isMeasureStart ? 'border-l-2 border-stone-700' : isSubBeat ? 'border-l border-stone-800/20' : 'border-l border-stone-800/40'}
-                        ${structureMode ? (b % 2 === 0 ? 'bg-stone-900/30' : '') : isActive ? 'bg-stone-800/70' : isSubBeat ? 'bg-stone-950/60 hover:bg-stone-900/60' : 'hover:bg-stone-800/40'}
+                        ${structureMode ? (b % 2 === 0 ? 'bg-stone-900/30' : '') : isActive ? 'bg-amber-500/20' : isSubBeat ? 'bg-stone-950/60 hover:bg-stone-900/60' : 'hover:bg-stone-800/40'}
                       `}
                     >
                       {isSelected && <span className="absolute inset-0 ring-2 ring-amber-400/70 rounded-sm pointer-events-none z-30" />}
@@ -2008,7 +2010,7 @@ const TabmakerPage = () => {
                             : isSlide ? 'bg-amber-200 text-stone-950'
                             : tech === 'arpeggio' ? 'bg-emerald-200 text-stone-950'
                             : tech === 'mute' ? 'bg-red-200 text-stone-950'
-                            : isActive ? 'bg-stone-300 text-stone-950'
+                            : isActive ? 'bg-amber-400 text-stone-950'
                             : 'bg-stone-200 text-stone-950'
                           }`}>
                             {isSlide
@@ -2033,8 +2035,10 @@ const TabmakerPage = () => {
                 const isMeasureStart = b % cpb === 0;
                 const isActive = currentBeat === b;
                 const syllable = lyrics[b] ?? '';
+                // Shrink font so syllable always fits in 40px cell (usable ≈ 36px, bold italic serif char ≈ 8px@13px)
+                const lyricFs = syllable.length <= 4 ? 13 : Math.max(7, Math.floor((36 / syllable.length) * 1.55));
                 return (
-                  <div key={b} className={`w-10 shrink-0 relative flex items-center overflow-visible ${isMeasureStart ? 'border-l border-stone-800/40' : ''} ${isActive && syllable ? 'bg-amber-500/10' : ''}`}>
+                  <div key={b} className={`w-10 shrink-0 relative flex items-center overflow-hidden ${isMeasureStart ? 'border-l border-stone-800/40' : ''} ${isActive && syllable ? 'bg-amber-500/10' : ''}`}>
                     <input
                       value={syllable}
                       onChange={(e) => setLyrics((prev) => ({ ...prev, [b]: e.target.value }))}
@@ -2042,9 +2046,10 @@ const TabmakerPage = () => {
                       onTouchStart={(e) => e.stopPropagation()}
                       placeholder=""
                       title={`Beat ${b + 1} — clique para digitar a sílaba cantada aqui`}
-                      className={`w-full text-[11px] bg-transparent border-none outline-none font-serif italic leading-none py-1 px-0.5 truncate focus:overflow-visible focus:z-10 focus:relative transition-colors ${
-                        isActive && syllable ? 'text-amber-300 font-semibold' : syllable ? 'text-stone-400' : 'text-stone-800 placeholder:text-stone-900'
+                      className={`w-full bg-transparent border-none outline-none font-serif italic font-bold leading-none py-1 px-0.5 focus:z-20 focus:relative transition-colors ${
+                        isActive && syllable ? 'text-amber-300' : syllable ? 'text-amber-500' : 'text-stone-800 placeholder:text-stone-900'
                       }`}
+                      style={{ fontSize: `${lyricFs}px` }}
                     />
                     {isActive && syllable && <span className="absolute bottom-0 left-0 right-0 h-px bg-amber-500/50 pointer-events-none" />}
                   </div>
@@ -2177,9 +2182,16 @@ const TabmakerPage = () => {
         }
 
         return (
-          <div className="shrink-0 px-4 py-6 border-t border-stone-800">
-            <h2 className="text-lg font-semibold text-stone-300 mb-4">📋 Tablatura Completa</h2>
-            <div id="tab-preview" className="bg-stone-950 rounded-lg p-5 font-mono text-xs leading-[18px] text-stone-400 whitespace-pre overflow-x-auto" style={{ scrollbarWidth: 'thin' }}>
+          <div className="shrink-0 border-t border-stone-800">
+            <button
+              onClick={() => setTabPreviewOpen((v) => !v)}
+              className="w-full flex items-center justify-between px-4 py-2.5 hover:bg-stone-800/40 transition-colors group"
+            >
+              <span className="text-sm font-semibold text-stone-400 group-hover:text-stone-200 transition-colors">📋 Tablatura Completa</span>
+              <ChevronRight size={16} className={`text-stone-500 transition-transform duration-200 ${tabPreviewOpen ? 'rotate-90' : ''}`} />
+            </button>
+            {tabPreviewOpen && (
+            <div id="tab-preview" className="bg-stone-950 mx-4 mb-4 rounded-lg p-5 font-mono text-xs leading-[18px] text-stone-400 whitespace-pre overflow-x-auto" style={{ scrollbarWidth: 'thin' }}>
               {lines.map((line, i) => (
                 <div key={i} className="mb-6">
                   {line.chordLine.trim() && <div className="text-amber-400 font-bold">{line.chordLine}</div>}
@@ -2188,6 +2200,7 @@ const TabmakerPage = () => {
                 </div>
               ))}
             </div>
+            )}
           </div>
         );
       })()}
@@ -2273,27 +2286,37 @@ const TabmakerPage = () => {
         const displayText = cifraEdited ? cifraText : generated;
 
         return hasContent || cifraEdited ? (
-          <div className="shrink-0 px-4 py-6 border-t border-stone-800">
-            <div className="flex items-center justify-between mb-4">
-              <h2 className="text-lg font-semibold text-stone-300">🎵 Cifra (Letra + Acordes)</h2>
+          <div className="shrink-0 border-t border-stone-800">
+            <button
+              onClick={() => setCifraOpen((v) => !v)}
+              className="w-full flex items-center justify-between px-4 py-2.5 hover:bg-stone-800/40 transition-colors group"
+            >
+              <span className="text-sm font-semibold text-stone-400 group-hover:text-stone-200 transition-colors">🎵 Cifra (Letra + Acordes)</span>
+              <ChevronRight size={16} className={`text-stone-500 transition-transform duration-200 ${cifraOpen ? 'rotate-90' : ''}`} />
+            </button>
+            {cifraOpen && (
+            <div className="px-4 pb-4">
               {cifraEdited && (
-                <button
-                  onClick={() => { setCifraEdited(false); setCifraText(generated); }}
-                  className="text-xs px-3 py-1 rounded bg-stone-700 hover:bg-stone-600 text-stone-300 transition-colors"
-                >
-                  ↻ Regerar da tab
-                </button>
+                <div className="flex justify-end mb-2">
+                  <button
+                    onClick={() => { setCifraEdited(false); setCifraText(generated); }}
+                    className="text-xs px-3 py-1 rounded bg-stone-700 hover:bg-stone-600 text-stone-300 transition-colors"
+                  >
+                    ↻ Regerar da tab
+                  </button>
+                </div>
               )}
+              <textarea
+                id="cifra-preview"
+                value={displayText}
+                onChange={(e) => { setCifraText(e.target.value); setCifraEdited(true); }}
+                spellCheck={false}
+                className="w-full bg-stone-950 rounded-lg p-5 font-mono text-sm leading-relaxed text-stone-300 overflow-x-auto resize-y outline-none border border-stone-800 focus:border-amber-500/50 transition-colors"
+                style={{ scrollbarWidth: 'thin', minHeight: '200px', whiteSpace: 'pre', overflowWrap: 'normal' }}
+                rows={Math.max(8, displayText.split('\n').length + 2)}
+              />
             </div>
-            <textarea
-              id="cifra-preview"
-              value={displayText}
-              onChange={(e) => { setCifraText(e.target.value); setCifraEdited(true); }}
-              spellCheck={false}
-              className="w-full bg-stone-950 rounded-lg p-5 font-mono text-sm leading-relaxed text-stone-300 overflow-x-auto resize-y outline-none border border-stone-800 focus:border-amber-500/50 transition-colors"
-              style={{ scrollbarWidth: 'thin', minHeight: '200px', whiteSpace: 'pre', overflowWrap: 'normal' }}
-              rows={Math.max(8, displayText.split('\n').length + 2)}
-            />
+            )}
           </div>
         ) : null;
       })()}
