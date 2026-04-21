@@ -30,7 +30,7 @@ const Navbar = () => {
     <nav
       className={`fixed top-0 left-0 right-0 z-50 transition-all duration-500 ${
         scrolled
-          ? 'bg-white/80 backdrop-blur-md shadow-sm shadow-black/10'
+          ? 'bg-stone-950/80 backdrop-blur-md shadow-lg shadow-black/20'
           : 'bg-gradient-to-b from-[#060607]/90 via-[#060607]/50 to-transparent'
       }`}
     >
@@ -41,8 +41,8 @@ const Navbar = () => {
             onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })}
             className="flex items-center gap-2.5 group"
           >
-            <LogoIcon className={`h-12 w-12 rounded-md object-contain m-2 transition-all duration-500 ${scrolled ? 'bg-[#060607]' : 'bg-transparent'}`} />
-            <span className={`text-base transition-colors duration-300 ${scrolled ? 'text-stone-900' : 'text-white'}`}>
+            <LogoIcon className="h-12 w-12 rounded-md object-contain m-2 bg-transparent" />
+            <span className="text-base text-white transition-colors duration-300">
               <span className="font-light">Vinde </span>
               <span className="font-bold">Adoremos</span>
             </span>
@@ -54,14 +54,14 @@ const Navbar = () => {
               <button
                 key={link.id}
                 onClick={() => scrollTo(link.id)}
-                className={`text-sm transition-colors duration-200 ${scrolled ? 'text-stone-600 hover:text-amber-600' : 'text-stone-300 hover:text-amber-400'}`}
+                className="text-sm text-stone-400 hover:text-white transition-colors duration-200"
               >
                 {link.label}
               </button>
             ))}
             <Link
               to="/tabmaker"
-              className={`text-sm font-semibold transition-colors duration-200 ${scrolled ? 'text-amber-600 hover:text-amber-500' : 'text-amber-400 hover:text-amber-300'}`}
+              className="text-sm font-semibold text-amber-400 hover:text-amber-300 transition-colors duration-200"
             >
               TabVinde
             </Link>
@@ -81,21 +81,21 @@ const Navbar = () => {
             onClick={() => setMenuOpen((v) => !v)}
             aria-label="Abrir menu"
           >
-            <span className={`block w-5 h-0.5 transition-all duration-200 ${scrolled ? 'bg-stone-800' : 'bg-white'} ${menuOpen ? 'rotate-45 translate-y-2' : ''}`} />
-            <span className={`block w-5 h-0.5 transition-all duration-200 ${scrolled ? 'bg-stone-800' : 'bg-white'} ${menuOpen ? 'opacity-0' : ''}`} />
-            <span className={`block w-5 h-0.5 transition-all duration-200 ${scrolled ? 'bg-stone-800' : 'bg-white'} ${menuOpen ? '-rotate-45 -translate-y-2' : ''}`} />
+            <span className={`block w-5 h-0.5 bg-white transition-all duration-200 ${menuOpen ? 'rotate-45 translate-y-2' : ''}`} />
+            <span className={`block w-5 h-0.5 bg-white transition-all duration-200 ${menuOpen ? 'opacity-0' : ''}`} />
+            <span className={`block w-5 h-0.5 bg-white transition-all duration-200 ${menuOpen ? '-rotate-45 -translate-y-2' : ''}`} />
           </button>
         </div>
       </div>
 
       {/* Mobile menu */}
       {menuOpen && (
-        <div className={`md:hidden border-t px-4 py-4 flex flex-col gap-3 ${scrolled ? 'bg-white border-stone-200' : 'bg-[#060607] border-stone-800'}`}>
+        <div className="md:hidden border-t border-white/5 bg-stone-950/95 backdrop-blur-md px-4 py-4 flex flex-col gap-3">
           {navLinks.map((link) => (
             <button
               key={link.id}
               onClick={() => scrollTo(link.id)}
-              className={`text-sm text-left transition-colors duration-200 py-1 ${scrolled ? 'text-stone-600 hover:text-amber-600' : 'text-stone-300 hover:text-amber-400'}`}
+              className="text-sm text-left text-stone-400 hover:text-white transition-colors duration-200 py-1"
             >
               {link.label}
             </button>
