@@ -1378,6 +1378,14 @@ const TabmakerPage = () => {
       });
       return next;
     });
+    setChords((prev) => {
+      const next: Record<number, ChordLabel> = {};
+      Object.entries(prev).forEach(([k, v]) => {
+        const beat = Number(k);
+        next[beat >= atBeat ? beat + 1 : beat] = v;
+      });
+      return next;
+    });
   };
 
   // Delete beat column at `atBeat`
@@ -1392,6 +1400,15 @@ const TabmakerPage = () => {
       Object.entries(prev).forEach(([k, v]) => {
         const beat = Number(k);
         if (beat === atBeat) return;
+        next[beat > atBeat ? beat - 1 : beat] = v;
+      });
+      return next;
+    });
+    setChords((prev) => {
+      const next: Record<number, ChordLabel> = {};
+      Object.entries(prev).forEach(([k, v]) => {
+        if (Number(k) === atBeat) return;
+        const beat = Number(k);
         next[beat > atBeat ? beat - 1 : beat] = v;
       });
       return next;
