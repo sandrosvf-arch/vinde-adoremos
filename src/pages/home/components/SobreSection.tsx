@@ -53,7 +53,7 @@ const SobreSection = () => {
                 'Sem complicação, sem travas! Um caminho claro para você tocar com confiança e propósito.',
               ],
             },
-          ].map(({ icon: Icon, emoji, title, lines }) => (
+          ].map(({ icon: Icon, title, lines }) => (
             <div key={title} className="p-6 bg-stone-900 rounded-2xl border border-stone-800">
               <div className="flex items-center gap-3 mb-4">
                 <div className="w-10 h-10 rounded-full bg-amber-600/20 flex items-center justify-center flex-shrink-0">

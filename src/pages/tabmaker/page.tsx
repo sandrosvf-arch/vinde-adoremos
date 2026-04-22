@@ -1343,6 +1343,26 @@ const TabmakerPage = () => {
     });
   };
 
+  // Prepend N empty bars at the very beginning — shifts all notes, lyrics and chords forward
+  const prependBars = (n = 1) => {
+    commit();
+    const add = n * colsPerBarNow;
+    const emptyBars: Grid = Array.from({ length: add }, () => Array(STRING_COUNT).fill(null));
+    setGrid((g) => [...emptyBars, ...g]);
+    setBeats((b) => b + add);
+    setStartBeat((s) => s + add);
+    setLyrics((prev) => {
+      const next: Record<number, string> = {};
+      Object.entries(prev).forEach(([k, v]) => { if (v) next[Number(k) + add] = v; });
+      return next;
+    });
+    setChords((prev) => {
+      const next: Record<number, ChordLabel> = {};
+      Object.entries(prev).forEach(([k, v]) => { next[Number(k) + add] = v; });
+      return next;
+    });
+  };
+
   // Insert a single empty beat column before beat `atBeat`
   const insertBeat = (atBeat: number) => {
     commit();
@@ -1489,6 +1509,17 @@ const TabmakerPage = () => {
                 <Plus className="w-3 h-3" />
               </button>
             </div>
+
+            {/* Inserir compasso no início */}
+            <button
+              onClick={() => prependBars(1)}
+              disabled={isPlaying}
+              title="Inserir compasso no início"
+              className="shrink-0 flex items-center gap-1 px-2 h-8 rounded-lg border border-stone-800 bg-stone-900 text-stone-400 hover:bg-stone-800 hover:text-stone-300 disabled:opacity-30 transition-colors text-xs"
+            >
+              <ChevronLeft className="w-3 h-3" />
+              <Plus className="w-2.5 h-2.5" />
+            </button>
 
             {/* Desfazer / Refazer */}
             <div className="shrink-0 flex items-center rounded-lg overflow-hidden border border-stone-800">

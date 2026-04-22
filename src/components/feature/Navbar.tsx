@@ -17,12 +17,6 @@ const Navbar = () => {
     setMenuOpen(false);
   };
 
-  const scrollTo = (id: string) => {
-    const el = document.getElementById(id);
-    if (el) el.scrollIntoView({ behavior: 'smooth' });
-    setMenuOpen(false);
-  };
-
   const navLinks = [
     { label: 'Tablaturas', action: () => goTo('/tablaturas') },
     { label: 'Assinatura', action: () => goTo('/assinatura') },
