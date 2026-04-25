@@ -20,22 +20,27 @@ export function useAuth() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    // Carrega sessão existente
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      if (session?.user) loadProfile(session.user.id);
-      else setLoading(false);
-    });
+    let mounted = true;
 
-    // Escuta mudanças de auth (login/logout)
+    // Escuta mudanças de auth (login/logout) — cobre redirect do OAuth
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      if (!mounted) return;
       if (session?.user) loadProfile(session.user.id);
       else { setUser(null); setLoading(false); }
     });
 
-    return () => subscription.unsubscribe();
+    // Carrega sessão existente no mount
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      if (!mounted) return;
+      if (session?.user) loadProfile(session.user.id);
+      else setLoading(false);
+    });
+
+    return () => { mounted = false; subscription.unsubscribe(); };
   }, []);
 
   async function loadProfile(userId: string) {
+    try {
     const [profileRes, favRes, progRes, sessionRes] = await Promise.all([
       supabase.from('profiles').select('*').eq('id', userId).single(),
       supabase.from('favorites').select('tablatura_id').eq('user_id', userId),
@@ -79,6 +84,10 @@ export function useAuth() {
       })),
     });
     setLoading(false);
+    } catch (err) {
+      console.error('loadProfile error:', err);
+      setLoading(false);
+    }
   }
 
   const isActive = user
