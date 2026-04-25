@@ -99,5 +99,24 @@ export function useAuth() {
     setUser(null);
   }
 
-  return { user, loading, isActive, signOut };
+  async function updateName(newName: string) {
+    if (!user) return;
+    await supabase.from('profiles').update({ name: newName }).eq('id', user.id);
+    setUser((u) => u ? { ...u, name: newName } : u);
+  }
+
+  async function updateAvatar(file: File): Promise<string | null> {
+    if (!user) return null;
+    const ext = file.name.split('.').pop();
+    const path = `${user.id}.${ext}`;
+    const { error } = await supabase.storage.from('avatars').upload(path, file, { upsert: true });
+    if (error) { console.error('Avatar upload error:', error); return null; }
+    const { data } = supabase.storage.from('avatars').getPublicUrl(path);
+    const url = `${data.publicUrl}?t=${Date.now()}`;
+    await supabase.from('profiles').update({ avatar_url: url }).eq('id', user.id);
+    setUser((u) => u ? { ...u, avatar: url } : u);
+    return url;
+  }
+
+  return { user, loading, isActive, signOut, updateName, updateAvatar };
 }
