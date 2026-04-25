@@ -10,13 +10,33 @@ type Tab = 'favoritos' | 'aprendendo' | 'minhas';
 
 const PerfilPage = () => {
   const navigate = useNavigate();
-  const { user, signOut, updateName, updateAvatar } = useAuth();
+  const { user, loading, signOut, updateName, updateAvatar } = useAuth();
   const [activeTab, setActiveTab] = useState<Tab>('favoritos');
   const [editingName, setEditingName] = useState(false);
   const [nameValue, setNameValue] = useState('');
   const [savingName, setSavingName] = useState(false);
   const [uploadingAvatar, setUploadingAvatar] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Ainda carregando — mostra skeleton em vez de área restrita
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-[#060607]">
+        <Navbar />
+        <main className="max-w-3xl mx-auto px-4 sm:px-6 pt-32 pb-24">
+          <div className="bg-stone-900/50 border border-stone-800 rounded-3xl p-6 sm:p-8 animate-pulse">
+            <div className="flex items-center gap-6">
+              <div className="w-24 h-24 rounded-full bg-stone-800 flex-shrink-0" />
+              <div className="flex-1 space-y-3">
+                <div className="h-6 bg-stone-800 rounded-lg w-40" />
+                <div className="h-4 bg-stone-800 rounded-lg w-24" />
+              </div>
+            </div>
+          </div>
+        </main>
+      </div>
+    );
+  }
 
   if (!user) {
     return (

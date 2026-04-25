@@ -1,8 +1,9 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { ArrowLeft, FileText, Music, Settings, Clock, Check, X, ChevronLeft, ChevronRight, SkipBack, ChevronDown, Play, Pause } from 'lucide-react';
+import { ArrowLeft, FileText, Music, Settings, Clock, Check, X, ChevronLeft, ChevronRight, SkipBack, ChevronDown, Play, Pause, Heart } from 'lucide-react';
 import { tablaturas } from '@/mocks/products';
 import Navbar from '@/components/feature/Navbar';
+import { useAuth } from '@/hooks/useAuth';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -301,6 +302,25 @@ function FullTablatura({
   );
 }
 
+function FavoriteButton({ tabId }: { tabId: number }) {
+  const { user, toggleFavorite } = useAuth();
+  const isFav = user?.favorites.includes(tabId) ?? false;
+  return (
+    <button
+      onClick={() => toggleFavorite(tabId)}
+      className={`flex-shrink-0 flex items-center gap-2 px-4 py-2 rounded-full border transition-all duration-200 text-sm font-medium ${
+        isFav
+          ? 'bg-red-500/15 border-red-500/40 text-red-400 hover:bg-red-500/25'
+          : 'border-stone-700 text-stone-400 hover:border-stone-500 hover:text-white'
+      }`}
+      aria-label={isFav ? 'Remover dos favoritos' : 'Adicionar aos favoritos'}
+    >
+      <Heart className={`w-4 h-4 ${isFav ? 'fill-red-500 text-red-500' : ''}`} />
+      {isFav ? 'Favoritado' : 'Favoritar'}
+    </button>
+  );
+}
+
 const AprenderPage = () => {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
@@ -502,10 +522,15 @@ const AprenderPage = () => {
 
         {/* Title */}
         <div className="mb-4">
-          <h1 className="text-2xl sm:text-3xl font-black text-white leading-tight mb-1">
-            {tab.title}
-          </h1>
-          <p className="text-stone-400 text-sm">{tab.composer}</p>
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <h1 className="text-2xl sm:text-3xl font-black text-white leading-tight mb-1">
+                {tab.title}
+              </h1>
+              <p className="text-stone-400 text-sm">{tab.composer}</p>
+            </div>
+            <FavoriteButton tabId={tab.id} />
+          </div>
         </div>
 
         {/* ── Video ──────────────────────────────────────────────────────────── */}
