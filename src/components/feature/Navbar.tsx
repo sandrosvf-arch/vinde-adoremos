@@ -53,25 +53,6 @@ const Navbar = () => {
 
             {/* Desktop links */}
             <div className="hidden md:flex items-center gap-6">
-              {/* Login / avatar — esquerda */}
-              {loading ? (
-                <div className="w-8 h-8 rounded-full bg-stone-800 animate-pulse" />
-              ) : user ? (
-                <button onClick={() => goTo('/perfil')} className="w-8 h-8 rounded-full overflow-hidden ring-2 ring-amber-500 hover:ring-amber-400 transition-all duration-200 flex-shrink-0" aria-label="Perfil">
-                  {user.avatar
-                    ? <img src={user.avatar} alt={user.name} className="w-full h-full object-cover" />
-                    : <span className="w-full h-full bg-amber-600 flex items-center justify-center text-white text-xs font-bold">{user.name[0].toUpperCase()}</span>
-                  }
-                </button>
-              ) : (
-                <button onClick={() => setAuthOpen(true)} className="flex items-center gap-1.5 text-sm text-stone-400 hover:text-white transition-colors duration-200">
-                  <UserCircle className="w-5 h-5" />
-                  Login
-                </button>
-              )}
-
-              <div className="w-px h-4 bg-stone-700" />
-
               {navLinks.map((link) => (
                 <button
                   key={link.label}
@@ -91,6 +72,21 @@ const Navbar = () => {
 
             {/* CTAs desktop */}
             <div className="hidden md:flex items-center gap-3">
+              {loading ? (
+                <div className="w-8 h-8 rounded-full bg-stone-800 animate-pulse" />
+              ) : user ? (
+                <button onClick={() => goTo('/perfil')} className="w-8 h-8 rounded-full overflow-hidden ring-2 ring-amber-500 hover:ring-amber-400 transition-all duration-200 flex-shrink-0" aria-label="Perfil">
+                  {user.avatar
+                    ? <img src={user.avatar} alt={user.name} className="w-full h-full object-cover" />
+                    : <span className="w-full h-full bg-amber-600 flex items-center justify-center text-white text-xs font-bold">{user.name[0].toUpperCase()}</span>
+                  }
+                </button>
+              ) : (
+                <button onClick={() => setAuthOpen(true)} className="flex items-center gap-1.5 text-sm text-stone-400 hover:text-white transition-colors duration-200">
+                  <UserCircle className="w-5 h-5" />
+                  Login
+                </button>
+              )}
               <button
                 onClick={() => goTo('/assinatura')}
                 className="bg-amber-600 hover:bg-amber-500 text-white text-sm font-medium px-4 py-2 rounded-full transition-colors duration-200"
