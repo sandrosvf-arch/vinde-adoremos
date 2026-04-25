@@ -36,14 +36,34 @@ export function useAuth() {
   }, []);
 
   async function loadProfile(userId: string) {
-    const [profileRes, favRes, progRes] = await Promise.all([
+    const [profileRes, favRes, progRes, sessionRes] = await Promise.all([
       supabase.from('profiles').select('*').eq('id', userId).single(),
       supabase.from('favorites').select('tablatura_id').eq('user_id', userId),
       supabase.from('progress').select('tablatura_id, status').eq('user_id', userId),
+      supabase.auth.getUser(),
     ]);
 
-    const profile = profileRes.data;
-    if (!profile) { setLoading(false); return; }
+    let profile = profileRes.data;
+
+    // Novo usuário (ex: primeiro login Google) — perfil ainda não criado pelo trigger
+    if (!profile) {
+      const authUser = sessionRes.data?.user;
+      const fallbackName =
+        authUser?.user_metadata?.full_name ??
+        authUser?.user_metadata?.name ??
+        authUser?.email?.split('@')[0] ??
+        'Usuário';
+      const fallbackAvatar = authUser?.user_metadata?.avatar_url ?? authUser?.user_metadata?.picture ?? null;
+
+      // Cria o perfil manualmente se o trigger ainda não rodou
+      await supabase.from('profiles').upsert({
+        id: userId,
+        name: fallbackName,
+        avatar_url: fallbackAvatar,
+      });
+
+      profile = { name: fallbackName, avatar_url: fallbackAvatar, plan: null, subscribed_at: null, expires_at: null };
+    }
 
     setUser({
       id: userId,
