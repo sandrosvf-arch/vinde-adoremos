@@ -118,5 +118,17 @@ export function useAuth() {
     return url;
   }
 
-  return { user, loading, isActive, signOut, updateName, updateAvatar };
+  async function toggleFavorite(tabId: number) {
+    if (!user) return;
+    const isFav = user.favorites.includes(tabId);
+    if (isFav) {
+      await supabase.from('favorites').delete().eq('user_id', user.id).eq('tablatura_id', tabId);
+      setUser((u) => u ? { ...u, favorites: u.favorites.filter((id) => id !== tabId) } : u);
+    } else {
+      await supabase.from('favorites').insert({ user_id: user.id, tablatura_id: tabId });
+      setUser((u) => u ? { ...u, favorites: [...u.favorites, tabId] } : u);
+    }
+  }
+
+  return { user, loading, isActive, signOut, updateName, updateAvatar, toggleFavorite };
 }

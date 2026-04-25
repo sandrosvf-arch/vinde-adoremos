@@ -5,7 +5,7 @@ import { useAuth } from '@/hooks/useAuth';
 
 const TablaturasSection = () => {
   const navigate = useNavigate();
-  const { user } = useAuth();
+  const { user, toggleFavorite } = useAuth();
   const preview = tablaturas.slice(0, 10);
 
   return (
@@ -73,7 +73,7 @@ const TablaturasSection = () => {
                 <div className="flex items-start justify-between gap-1 mb-0.5">
                   <h3 className="text-white font-semibold text-sm sm:text-base leading-snug line-clamp-2">{tab.title}</h3>
                   <button
-                    onClick={(e) => { e.stopPropagation(); /* Supabase: toggle favorite */ }}
+                    onClick={(e) => { e.stopPropagation(); toggleFavorite(tab.id); }}
                     className="flex-shrink-0 p-1 -mr-1 rounded-full transition-colors duration-150"
                     aria-label="Favoritar"
                   >
